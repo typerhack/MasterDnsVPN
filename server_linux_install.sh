@@ -122,17 +122,18 @@ chmod +x "$EXECUTABLE"
 
 # 4. Configuration
 log_header "Configuration"
-[ -f "server_config.toml.backup" ] && mv server_config.toml.backup server_config.toml && log_info "Config restored from backup."
 
-if [ ! -f "server_config.toml" ] && [ -f "server_config.toml.simple" ]; then
-    cp server_config.toml.simple server_config.toml
+if [ -f "server_config.toml.backup" ]; then
+    mv -f server_config.toml.backup server_config.toml
+    log_info "Config restored from backup."
 fi
 
-if [ -f "server_config.toml" ] && grep -Fq 'DOMAIN = ["v.domain.com"]' server_config.toml; then
+if [ -f "server_config.toml" ] && grep -q '"v.domain.com"' server_config.toml; then
     echo -e "${YELLOW}${BOLD}Attention:${NC} You need to set your NS Record Domain."
     read -p ">>> Enter your Domain (e.g. vpn.example.com): " USER_DOMAIN
+    
     if [ -n "$USER_DOMAIN" ]; then
-        sed -i 's/DOMAIN = \["v\.domain\.com"\]/DOMAIN = ["'"$USER_DOMAIN"'"]/' server_config.toml
+        sed -i 's/DOMAIN[[:space:]]*=[[:space:]]*\["v\.domain\.com"\]/DOMAIN = ["'"$USER_DOMAIN"'"]/' server_config.toml
     fi
 fi
 
