@@ -946,7 +946,7 @@ class MasterDnsVPNServer:
             )
 
         except Exception as e:
-            self.logger.error(
+            self.logger.debug(
                 f"<red>SOCKS5 target connection failed for stream {stream_id}: {e}</red>"
             )
             await self.close_stream(

@@ -359,7 +359,7 @@ class ARQ:
         _append = items_to_resend.append
 
         for sn, info in list(self.snd_buf.items()):
-            if info["create_time"] + 120.0 >= now:
+            if info["create_time"] + 120.0 <= now and info["retries"] >= 100:
                 await self.abort(reason=f"Max retransmissions exceeded for sn={sn}")
                 return
 

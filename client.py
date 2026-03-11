@@ -1632,21 +1632,37 @@ class MasterDnsVPNClient:
                                 f"Failed to write SOCKS5 reply to local client: {e}"
                             )
                     else:
-                        raise ConnectionError(
-                            "Local writer closed before SOCKS5 reply."
+                        await self.close_stream(
+                            stream_id,
+                            reason="Local app closed before SOCKS5 reply",
+                            abortive=True,
                         )
+                        return
                 else:
                     raise ConnectionError("Stream closed before handshake completion.")
 
-            except asyncio.TimeoutError:
-                self.logger.debug(f"SOCKS5 Handshake timed out for stream {stream_id}")
+            except Exception as e:
+                err_text = str(e)
+
+                if err_text == "Local writer closed before SOCKS5 reply.":
+                    self.logger.debug(err_text)
+                    await self.close_stream(
+                        stream_id,
+                        reason=err_text,
+                        abortive=True,
+                    )
+                    return
+
+                self.logger.debug(f"SOCKS Target Rejected by Server: {e}")
                 try:
-                    writer.write(b"\x05\x04\x00\x01\x00\x00\x00\x00\x00\x00")
+                    writer.write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
                     await writer.drain()
                 except Exception:
                     pass
                 await self.close_stream(
-                    stream_id, reason="SOCKS Target Timeout", abortive=True
+                    stream_id,
+                    reason="SOCKS Target Rejected by Server",
+                    abortive=True,
                 )
 
             except Exception as e:
