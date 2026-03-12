@@ -127,6 +127,7 @@ class MasterDnsVPNClient:
             sorted((d.lower() for d in self.domains), key=len, reverse=True)
         )
         self.main_queue = []
+        self.priority_counts = {}
         self.tx_event = asyncio.Event()
         self.rx_semaphore = asyncio.Semaphore(200)
         self.listener_ip = self.config.get("LISTEN_IP", "127.0.0.1")
@@ -139,6 +140,55 @@ class MasterDnsVPNClient:
         self.logger.debug("<magenta>[INIT]</magenta> MasterDnsVPNClient initialized.")
 
         self._block_packer = struct.Struct(">BHH")
+        self._valid_packet_types = {
+            v
+            for k, v in Packet_Type.__dict__.items()
+            if not k.startswith("__") and isinstance(v, int)
+        }
+        self._control_request_ack_map = {
+            Packet_Type.STREAM_KEEPALIVE: Packet_Type.STREAM_KEEPALIVE_ACK,
+            Packet_Type.STREAM_WINDOW_UPDATE: Packet_Type.STREAM_WINDOW_UPDATE_ACK,
+            Packet_Type.STREAM_PROBE: Packet_Type.STREAM_PROBE_ACK,
+            Packet_Type.SOCKS5_CONNECT_FAIL: Packet_Type.SOCKS5_CONNECT_FAIL_ACK,
+            Packet_Type.SOCKS5_RULESET_DENIED: Packet_Type.SOCKS5_RULESET_DENIED_ACK,
+            Packet_Type.SOCKS5_NETWORK_UNREACHABLE: Packet_Type.SOCKS5_NETWORK_UNREACHABLE_ACK,
+            Packet_Type.SOCKS5_HOST_UNREACHABLE: Packet_Type.SOCKS5_HOST_UNREACHABLE_ACK,
+            Packet_Type.SOCKS5_CONNECTION_REFUSED: Packet_Type.SOCKS5_CONNECTION_REFUSED_ACK,
+            Packet_Type.SOCKS5_TTL_EXPIRED: Packet_Type.SOCKS5_TTL_EXPIRED_ACK,
+            Packet_Type.SOCKS5_COMMAND_UNSUPPORTED: Packet_Type.SOCKS5_COMMAND_UNSUPPORTED_ACK,
+            Packet_Type.SOCKS5_ADDRESS_TYPE_UNSUPPORTED: Packet_Type.SOCKS5_ADDRESS_TYPE_UNSUPPORTED_ACK,
+            Packet_Type.SOCKS5_AUTH_FAILED: Packet_Type.SOCKS5_AUTH_FAILED_ACK,
+            Packet_Type.SOCKS5_UPSTREAM_UNAVAILABLE: Packet_Type.SOCKS5_UPSTREAM_UNAVAILABLE_ACK,
+        }
+        self._control_ack_types = set(self._control_request_ack_map.values()) | {
+            Packet_Type.STREAM_SYN_ACK,
+            Packet_Type.SOCKS5_SYN_ACK,
+            Packet_Type.STREAM_FIN_ACK,
+            Packet_Type.STREAM_RST_ACK,
+        }
+        self._packable_control_types = set(self._control_ack_types)
+        self._packable_control_types.update(self._control_request_ack_map.keys())
+        self._packable_control_types.add(Packet_Type.STREAM_DATA_ACK)
+        self._packable_control_types.update(
+            {
+                Packet_Type.STREAM_SYN,
+                Packet_Type.STREAM_FIN,
+                Packet_Type.STREAM_RST,
+                Packet_Type.SOCKS5_SYN,
+            }
+        )
+        self._socks5_error_reply_map = {
+            Packet_Type.SOCKS5_CONNECT_FAIL: 0x01,
+            Packet_Type.SOCKS5_RULESET_DENIED: 0x02,
+            Packet_Type.SOCKS5_NETWORK_UNREACHABLE: 0x03,
+            Packet_Type.SOCKS5_HOST_UNREACHABLE: 0x04,
+            Packet_Type.SOCKS5_CONNECTION_REFUSED: 0x05,
+            Packet_Type.SOCKS5_TTL_EXPIRED: 0x06,
+            Packet_Type.SOCKS5_COMMAND_UNSUPPORTED: 0x07,
+            Packet_Type.SOCKS5_ADDRESS_TYPE_UNSUPPORTED: 0x08,
+            Packet_Type.SOCKS5_AUTH_FAILED: 0x01,
+            Packet_Type.SOCKS5_UPSTREAM_UNAVAILABLE: 0x01,
+        }
         self.config_version = self.config.get("CONFIG_VERSION", 0.1)
         self.min_config_version = 1.0
 
@@ -1092,9 +1142,7 @@ class MasterDnsVPNClient:
         self.active_streams = {}
         self.closed_streams = {}
 
-        self.count_ack = 0
-        self.count_data = 0
-        self.count_resend = 0
+        self.priority_counts = {}
         self.count_ping = 0
         self.track_ack = set()
         self.track_resend = set()
@@ -1223,9 +1271,7 @@ class MasterDnsVPNClient:
         self.enqueue_seq = 0
         self.last_stream_id = 0
 
-        self.count_ack = 0
-        self.count_data = 0
-        self.count_resend = 0
+        self.priority_counts = {}
         self.count_ping = 0
         self.track_ack = set()
         self.track_resend = set()
@@ -1372,6 +1418,7 @@ class MasterDnsVPNClient:
                 self.track_resend.clear()
                 self.track_types.clear()
                 self.track_data.clear()
+                self.priority_counts.clear()
             except Exception:
                 pass
 
@@ -1445,6 +1492,91 @@ class MasterDnsVPNClient:
             stream_id += 1
 
         return False, 0
+
+    def _inc_priority_counter(self, owner: dict, priority: int) -> None:
+        counters = owner.setdefault("priority_counts", {})
+        p = int(priority)
+        counters[p] = counters.get(p, 0) + 1
+
+    def _dec_priority_counter(self, owner: dict, priority: int) -> None:
+        counters = owner.get("priority_counts")
+        if not counters:
+            return
+        p = int(priority)
+        cur = counters.get(p, 0)
+        if cur <= 1:
+            counters.pop(p, None)
+        else:
+            counters[p] = cur - 1
+
+    def _release_tracking_on_pop(self, owner: dict, packet_type: int, sn: int) -> None:
+        ptype = int(packet_type)
+        if ptype in (Packet_Type.STREAM_DATA, Packet_Type.SOCKS5_SYN):
+            owner.get("track_data", set()).discard(sn)
+        elif ptype == Packet_Type.STREAM_DATA_ACK:
+            owner.get("track_ack", set()).discard(sn)
+        elif ptype == Packet_Type.STREAM_RESEND:
+            owner.get("track_resend", set()).discard(sn)
+        elif ptype == Packet_Type.STREAM_FIN:
+            owner.get("track_fin", set()).discard(ptype)
+            owner.get("track_types", set()).discard(ptype)
+        elif ptype in (
+            Packet_Type.STREAM_SYN,
+            Packet_Type.STREAM_SYN_ACK,
+            Packet_Type.SOCKS5_SYN_ACK,
+        ):
+            owner.get("track_syn_ack", set()).discard(ptype)
+            owner.get("track_types", set()).discard(ptype)
+
+    def _on_queue_pop(self, owner: dict, queue_item: tuple) -> None:
+        priority, _, ptype, _, sn, _ = queue_item
+        self._dec_priority_counter(owner, priority)
+        self._release_tracking_on_pop(owner, ptype, sn)
+
+    def _pop_packable_control_block(self, queue, owner: dict, priority: int):
+        if not queue:
+            return None
+        item = queue[0]
+        if int(item[0]) != int(priority):
+            return None
+        ptype = int(item[2])
+        payload = item[5]
+        if ptype not in self._packable_control_types or payload:
+            return None
+        popped = heapq.heappop(queue)
+        self._on_queue_pop(owner, popped)
+        return popped
+
+    def _resolve_arq_packet_type(self, **flags) -> int:
+        if flags.get("is_ack"):
+            return Packet_Type.STREAM_DATA_ACK
+        if flags.get("is_fin"):
+            return Packet_Type.STREAM_FIN
+        if flags.get("is_fin_ack"):
+            return Packet_Type.STREAM_FIN_ACK
+        if flags.get("is_rst"):
+            return Packet_Type.STREAM_RST
+        if flags.get("is_rst_ack"):
+            return Packet_Type.STREAM_RST_ACK
+        if flags.get("is_syn_ack"):
+            return Packet_Type.STREAM_SYN_ACK
+        if flags.get("is_socks_syn_ack"):
+            return Packet_Type.SOCKS5_SYN_ACK
+        if flags.get("is_socks_syn"):
+            return Packet_Type.SOCKS5_SYN
+        if flags.get("is_resend"):
+            return Packet_Type.STREAM_RESEND
+        return Packet_Type.STREAM_DATA
+
+    def _is_socks5_error_packet(self, packet_type: int) -> bool:
+        return int(packet_type) in self._socks5_error_reply_map
+
+    def _packet_type_to_socks5_rep(self, packet_type: int) -> int:
+        return int(self._socks5_error_reply_map.get(int(packet_type), 0x01))
+
+    def _build_socks5_fail_reply(self, packet_type: int) -> bytes:
+        rep = self._packet_type_to_socks5_rep(packet_type)
+        return bytes([0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
 
     async def _handle_local_tcp_connection(self, reader, writer):
         if self.should_stop.is_set() or (
@@ -1601,11 +1733,7 @@ class MasterDnsVPNClient:
             "stream_creating": False,
             "tx_queue": [],
             "initial_payload": target_payload,
-            "count_ack": 0,
-            "count_data": 0,
-            "count_resend": 0,
-            "count_fin": 0,
-            "count_syn_ack": 0,
+            "priority_counts": {},
             "track_ack": set(),
             "track_resend": set(),
             "track_fin": set(),
@@ -1614,13 +1742,9 @@ class MasterDnsVPNClient:
         }
 
         if not is_socks5:
-            self.enqueue_seq = (self.enqueue_seq + 1) & 0x7FFFFFFF
-
-            heapq.heappush(
-                self.active_streams[stream_id]["tx_queue"],
-                (0, self.enqueue_seq, Packet_Type.STREAM_SYN, stream_id, 0, syn_data),
+            await self._enqueue_packet(
+                0, stream_id, 0, Packet_Type.STREAM_SYN, syn_data
             )
-            self.tx_event.set()
         else:
             self.active_streams[stream_id]["handshake_event"] = asyncio.Event()
 
@@ -1632,10 +1756,15 @@ class MasterDnsVPNClient:
                     timeout=60.0,
                 )
 
-                if (
-                    stream_id in self.active_streams
-                    and self.active_streams[stream_id].get("status") == "ACTIVE"
-                ):
+                stream_data = self.active_streams.get(stream_id)
+                if not stream_data:
+                    raise ConnectionError("Stream closed before handshake completion.")
+
+                socks_err_ptype = stream_data.get("socks_error_packet")
+                if socks_err_ptype is not None:
+                    raise ConnectionError(f"SOCKS handshake failed ({socks_err_ptype})")
+
+                if stream_data.get("status") == "ACTIVE":
                     if writer and not writer.is_closing():
                         reply = b"\x05\x00\x00"  # VER, REP=0(success), RSV
                         if atyp == 0x01:
@@ -1649,7 +1778,7 @@ class MasterDnsVPNClient:
                             writer.write(reply)
                             await writer.drain()
 
-                            stream_obj = self.active_streams[stream_id].get("stream")
+                            stream_obj = stream_data.get("stream")
                             if (
                                 stream_obj
                                 and hasattr(stream_obj, "socks_connected")
@@ -1672,33 +1801,14 @@ class MasterDnsVPNClient:
                     raise ConnectionError("Stream closed before handshake completion.")
 
             except Exception as e:
-                err_text = str(e)
-
-                if err_text == "Local writer closed before SOCKS5 reply.":
-                    self.logger.debug(err_text)
-                    await self.close_stream(
-                        stream_id,
-                        reason=err_text,
-                        abortive=True,
+                stream_data = self.active_streams.get(stream_id, {})
+                socks_err_ptype = stream_data.get("socks_error_packet")
+                self.logger.debug(f"SOCKS Target Rejected by Server: {e}")
+                try:
+                    fail_reply = self._build_socks5_fail_reply(
+                        socks_err_ptype or Packet_Type.SOCKS5_CONNECT_FAIL
                     )
-                    return
-
-                self.logger.debug(f"SOCKS Target Rejected by Server: {e}")
-                try:
-                    writer.write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
-                    await writer.drain()
-                except Exception:
-                    pass
-                await self.close_stream(
-                    stream_id,
-                    reason="SOCKS Target Rejected by Server",
-                    abortive=True,
-                )
-
-            except Exception as e:
-                self.logger.debug(f"SOCKS Target Rejected by Server: {e}")
-                try:
-                    writer.write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
+                    writer.write(fail_reply)
                     await writer.drain()
                 except Exception:
                     pass
@@ -1718,6 +1828,7 @@ class MasterDnsVPNClient:
             stream_id=stream_id,
             session_id=self.session_id,
             enqueue_tx_cb=self._client_enqueue_tx,
+            enqueue_control_tx_cb=self._client_enqueue_control_tx,
             reader=reader,
             writer=writer,
             mtu=self.safe_uplink_mtu,
@@ -1725,10 +1836,23 @@ class MasterDnsVPNClient:
             window_size=int(self.arq_window_size),
             rto=float(self.arq_initial_rto),
             max_rto=float(self.arq_max_rto),
+            enable_control_reliability=True,
+            control_rto=float(self.config.get("ARQ_CONTROL_INITIAL_RTO", 0.8)),
+            control_max_rto=float(self.config.get("ARQ_CONTROL_MAX_RTO", 2.5)),
+            control_max_retries=int(self.config.get("ARQ_CONTROL_MAX_RETRIES", 40)),
             is_socks=True,
-            initial_data=target_payload,
+            initial_data=b"",
         )
         stream_data["stream"] = stream
+        stream_data.pop("socks_error_packet", None)
+        await stream.send_control_packet(
+            packet_type=Packet_Type.SOCKS5_SYN,
+            sequence_num=0,
+            payload=target_payload,
+            priority=0,
+            track_for_ack=True,
+            ack_type=Packet_Type.SOCKS5_SYN_ACK,
+        )
         self.logger.debug(
             f"<green>SOCKS5 Stream <cyan>{stream_id}</cyan> Created and queued SOCKS5_SYN chunks.</green>"
         )
@@ -1740,122 +1864,121 @@ class MasterDnsVPNClient:
         stream_id,
         sn,
         data,
-        is_ack=False,
-        is_fin=False,
-        is_fin_ack=False,
-        is_rst=False,
-        is_rst_ack=False,
-        is_resend=False,
-        is_socks_syn=False,
+        **flags,
     ):
         if self.should_stop.is_set() or (
             self.session_restart_event and self.session_restart_event.is_set()
         ):
             return
 
-        ptype = Packet_Type.STREAM_DATA
-        effective_priority = priority
+        ptype = self._resolve_arq_packet_type(**flags)
+        await self._enqueue_packet(priority, stream_id, sn, ptype, data)
 
-        if is_socks_syn:
-            ptype = Packet_Type.SOCKS5_SYN
-            effective_priority = priority
-        elif is_ack:
-            ptype = Packet_Type.STREAM_DATA_ACK
+    async def _client_enqueue_control_tx(
+        self,
+        priority,
+        stream_id,
+        sn,
+        packet_type,
+        payload,
+        is_retransmit=False,
+    ):
+        _ = is_retransmit
+        await self._enqueue_packet(
+            priority, stream_id, sn, int(packet_type), payload or b""
+        )
+
+    async def _enqueue_packet(self, priority, stream_id, sn, packet_type, data):
+        ptype = int(packet_type)
+        effective_priority = int(priority)
+        if ptype in (
+            Packet_Type.STREAM_DATA_ACK,
+            Packet_Type.STREAM_RST,
+            Packet_Type.STREAM_RST_ACK,
+            Packet_Type.STREAM_FIN_ACK,
+            Packet_Type.STREAM_SYN_ACK,
+            Packet_Type.SOCKS5_SYN_ACK,
+        ):
             effective_priority = 0
-        elif is_fin_ack:
-            ptype = Packet_Type.STREAM_FIN_ACK
-            effective_priority = 0
-        elif is_rst_ack:
-            ptype = Packet_Type.STREAM_RST_ACK
-            effective_priority = 0
-        elif is_rst:
-            ptype = Packet_Type.STREAM_RST
-            effective_priority = 0
-        elif is_fin:
-            ptype = Packet_Type.STREAM_FIN
+        elif ptype == Packet_Type.STREAM_FIN:
             effective_priority = 4
-        elif is_resend:
-            ptype = Packet_Type.STREAM_RESEND
+        elif ptype == Packet_Type.STREAM_RESEND:
             effective_priority = 1
 
         self.enqueue_seq = (self.enqueue_seq + 1) & 0x7FFFFFFF
-        queue_item = (effective_priority, self.enqueue_seq, ptype, stream_id, sn, data)
+        queue_item = (
+            effective_priority,
+            self.enqueue_seq,
+            ptype,
+            stream_id,
+            sn,
+            data,
+        )
 
         if stream_id == 0:
-            if is_resend:
-                if sn in self.track_data:
-                    return
-                if sn in self.track_resend:
+            if ptype == Packet_Type.STREAM_RESEND:
+                if sn in self.track_data or sn in self.track_resend:
                     return
                 self.track_resend.add(sn)
-                self.count_resend += 1
-
             elif ptype in (
                 Packet_Type.STREAM_FIN,
                 Packet_Type.STREAM_SYN,
                 Packet_Type.STREAM_SYN_ACK,
+                Packet_Type.SOCKS5_SYN_ACK,
             ):
                 if ptype in self.track_types:
                     return
                 self.track_types.add(ptype)
-
             elif ptype == Packet_Type.STREAM_DATA_ACK:
                 if sn in self.track_ack:
                     return
                 self.track_ack.add(sn)
-                self.count_ack += 1
-
             elif ptype == Packet_Type.STREAM_DATA:
                 if sn in self.track_data:
                     return
                 self.track_data.add(sn)
-                self.count_data += 1
 
             heapq.heappush(self.main_queue, queue_item)
+            self._inc_priority_counter(self.__dict__, effective_priority)
             self.tx_event.set()
+            return
 
-        else:
-            stream_data = self.active_streams.get(stream_id)
-            if not stream_data:
-                if is_rst or is_fin_ack or is_rst_ack:
-                    heapq.heappush(self.main_queue, queue_item)
-                    self.tx_event.set()
+        stream_data = self.active_streams.get(stream_id)
+        if not stream_data:
+            if ptype in (
+                Packet_Type.STREAM_RST,
+                Packet_Type.STREAM_RST_ACK,
+                Packet_Type.STREAM_FIN_ACK,
+            ):
+                heapq.heappush(self.main_queue, queue_item)
+                self._inc_priority_counter(self.__dict__, effective_priority)
+                self.tx_event.set()
+            return
+
+        if ptype == Packet_Type.STREAM_RESEND:
+            if sn in stream_data["track_data"] or sn in stream_data["track_resend"]:
                 return
+            stream_data["track_resend"].add(sn)
+        elif ptype == Packet_Type.STREAM_FIN:
+            if ptype in stream_data["track_fin"]:
+                return
+            stream_data["track_fin"].add(ptype)
+        elif ptype in (Packet_Type.STREAM_SYN_ACK, Packet_Type.SOCKS5_SYN_ACK):
+            if ptype in stream_data["track_syn_ack"]:
+                return
+            stream_data["track_syn_ack"].add(ptype)
+        elif ptype == Packet_Type.STREAM_DATA_ACK:
+            if sn in stream_data["track_ack"]:
+                return
+            stream_data["track_ack"].add(sn)
+        elif ptype in (Packet_Type.STREAM_DATA, Packet_Type.SOCKS5_SYN):
+            if sn in stream_data["track_data"]:
+                return
+            stream_data["track_data"].add(sn)
 
-            if is_resend:
-                if sn in stream_data["track_data"]:
-                    return
-                if sn in stream_data["track_resend"]:
-                    return
-                stream_data["track_resend"].add(sn)
-                stream_data["count_resend"] += 1
-
-            elif ptype == Packet_Type.STREAM_FIN:
-                if ptype in stream_data["track_fin"]:
-                    return
-                stream_data["track_fin"].add(ptype)
-                stream_data["count_fin"] += 1
-
-            elif ptype == Packet_Type.STREAM_SYN_ACK:
-                if ptype in stream_data["track_syn_ack"]:
-                    return
-                stream_data["track_syn_ack"].add(ptype)
-                stream_data["count_syn_ack"] += 1
-
-            elif ptype == Packet_Type.STREAM_DATA_ACK:
-                if sn in stream_data["track_ack"]:
-                    return
-                stream_data["track_ack"].add(sn)
-                stream_data["count_ack"] += 1
-
-            elif ptype in (Packet_Type.STREAM_DATA, Packet_Type.SOCKS5_SYN):
-                if sn in stream_data["track_data"]:
-                    return
-                stream_data["track_data"].add(sn)
-                stream_data["count_data"] += 1
-
-            heapq.heappush(stream_data["tx_queue"], queue_item)
-            self.tx_event.set()
+        heapq.heappush(stream_data["tx_queue"], queue_item)
+        self._inc_priority_counter(stream_data, effective_priority)
+        self.tx_event.set()
 
     async def _tx_worker(self):
         while not self.should_stop.is_set() and not self.session_restart_event.is_set():
@@ -1902,96 +2025,47 @@ class MasterDnsVPNClient:
                 q_ptype, q_stream_id, q_sn = item[2], item[3], item[4]
 
                 if is_main:
-                    if q_ptype == Packet_Type.STREAM_DATA:
-                        self.track_data.discard(q_sn)
-                        if self.count_data > 0:
-                            self.count_data -= 1
-                    elif q_ptype == Packet_Type.STREAM_DATA_ACK:
-                        self.track_ack.discard(q_sn)
-                        if self.count_ack > 0:
-                            self.count_ack -= 1
-                    elif q_ptype == Packet_Type.STREAM_RESEND:
-                        self.track_resend.discard(q_sn)
-                        if self.count_resend > 0:
-                            self.count_resend -= 1
-                    elif q_ptype in (
-                        Packet_Type.STREAM_FIN,
-                        Packet_Type.STREAM_SYN,
-                        Packet_Type.STREAM_SYN_ACK,
-                    ):
-                        self.track_types.discard(q_ptype)
-                    elif q_ptype == Packet_Type.PING:
-                        if self.count_ping > 0:
-                            self.count_ping -= 1
-                else:
-                    if q_ptype in (Packet_Type.STREAM_DATA, Packet_Type.SOCKS5_SYN):
-                        selected_stream_data["track_data"].discard(q_sn)
-                        if selected_stream_data["count_data"] > 0:
-                            selected_stream_data["count_data"] -= 1
-                    elif q_ptype == Packet_Type.STREAM_DATA_ACK:
-                        selected_stream_data["track_ack"].discard(q_sn)
-                        if selected_stream_data["count_ack"] > 0:
-                            selected_stream_data["count_ack"] -= 1
-                    elif q_ptype == Packet_Type.STREAM_RESEND:
-                        selected_stream_data["track_resend"].discard(q_sn)
-                        if selected_stream_data["count_resend"] > 0:
-                            selected_stream_data["count_resend"] -= 1
-                    elif q_ptype == Packet_Type.STREAM_FIN:
-                        selected_stream_data["track_fin"].discard(q_ptype)
-                        if selected_stream_data["count_fin"] > 0:
-                            selected_stream_data["count_fin"] -= 1
-                    elif q_ptype == Packet_Type.STREAM_SYN_ACK:
-                        selected_stream_data["track_syn_ack"].discard(q_ptype)
-                        if selected_stream_data["count_syn_ack"] > 0:
-                            selected_stream_data["count_syn_ack"] -= 1
+                    self._on_queue_pop(self.__dict__, item)
+                    if q_ptype == Packet_Type.PING and self.count_ping > 0:
+                        self.count_ping -= 1
+                elif selected_stream_data is not None:
+                    self._on_queue_pop(selected_stream_data, item)
 
             if (
                 item
-                and item[2] == Packet_Type.STREAM_DATA_ACK
+                and item[2] in self._packable_control_types
+                and not item[5]
                 and self.max_packed_blocks > 1
             ):
                 _pack = self._block_packer.pack
                 packed_buffer = bytearray(_pack(item[2], item[3], item[4]))
                 blocks = 1
                 max_blocks = self.max_packed_blocks
+                target_priority = int(item[0])
 
-                mq = getattr(self, "main_queue", [])
-                while self.count_ack > 0 and mq and blocks < max_blocks:
-                    if mq[0][2] == Packet_Type.STREAM_DATA_ACK:
-                        popped = heapq.heappop(mq)
-                        self.track_ack.discard(popped[4])
-                        self.count_ack -= 1
+                candidate_queues = []
+                if self.main_queue:
+                    candidate_queues.append((self.main_queue, self.__dict__))
+                for sid in active_sids:
+                    s_data = self.active_streams.get(sid)
+                    if s_data and s_data.get("tx_queue"):
+                        candidate_queues.append((s_data["tx_queue"], s_data))
+
+                while blocks < max_blocks:
+                    packed_any = False
+                    for q_ref, owner in candidate_queues:
+                        popped = self._pop_packable_control_block(
+                            q_ref, owner, target_priority
+                        )
+                        if popped is None:
+                            continue
                         packed_buffer.extend(_pack(popped[2], popped[3], popped[4]))
                         blocks += 1
-                    else:
-                        break
-
-                if blocks < max_blocks and active_sids:
-                    start_idx = self.round_robin_index
-                    num_active = len(active_sids)
-
-                    for offset in range(num_active):
+                        packed_any = True
                         if blocks >= max_blocks:
                             break
-
-                        sid = active_sids[(start_idx + offset) % num_active]
-                        s_data = self.active_streams[sid]
-
-                        if s_data["count_ack"] > 0:
-                            t_q = s_data["tx_queue"]
-                            while (
-                                s_data["count_ack"] > 0 and t_q and blocks < max_blocks
-                            ):
-                                if t_q[0][2] == Packet_Type.STREAM_DATA_ACK:
-                                    popped = heapq.heappop(t_q)
-                                    s_data["track_ack"].discard(popped[4])
-                                    s_data["count_ack"] -= 1
-                                    packed_buffer.extend(
-                                        _pack(popped[2], popped[3], popped[4])
-                                    )
-                                    blocks += 1
-                                else:
-                                    break
+                    if not packed_any:
+                        break
 
                 item = (
                     item[0],
@@ -2070,7 +2144,7 @@ class MasterDnsVPNClient:
             self.logger.debug(f"TX Worker error during packet building/sending: {e}")
 
     async def _handle_server_response(self, header, data):
-        ptype = header["packet_type"]
+        ptype = int(header["packet_type"])
         header_session_id = header.get("session_id", -1)
 
         if header_session_id != self.session_id and ptype != Packet_Type.SESSION_ACCEPT:
@@ -2081,32 +2155,53 @@ class MasterDnsVPNClient:
 
         if stream_id > 0 and stream_id in self.closed_streams:
             if ptype == Packet_Type.STREAM_FIN:
-                await self._client_enqueue_tx(0, stream_id, sn, b"", is_fin_ack=True)
+                await self._enqueue_packet(
+                    0, stream_id, sn, Packet_Type.STREAM_FIN_ACK, b""
+                )
                 return
-            elif ptype == Packet_Type.STREAM_RST:
-                await self._client_enqueue_tx(0, stream_id, sn, b"", is_rst_ack=True)
+            if ptype == Packet_Type.STREAM_RST:
+                await self._enqueue_packet(
+                    0, stream_id, sn, Packet_Type.STREAM_RST_ACK, b""
+                )
                 return
-            elif ptype in (
+            if ptype in (
                 Packet_Type.STREAM_DATA,
                 Packet_Type.STREAM_RESEND,
                 Packet_Type.STREAM_DATA_ACK,
             ):
-                await self._client_enqueue_tx(
-                    0, stream_id, 0, b"RST:" + os.urandom(4), is_rst=True
+                await self._enqueue_packet(
+                    0, stream_id, 0, Packet_Type.STREAM_RST, b"RST:" + os.urandom(4)
                 )
                 return
 
-        stream_id_exists = False
-        if stream_id > 0 and stream_id in self.active_streams:
-            stream_id_exists = True
-            self.active_streams[stream_id]["last_activity_time"] = time.monotonic()
+        stream_data = self.active_streams.get(stream_id) if stream_id > 0 else None
+        stream_id_exists = stream_data is not None
+        if stream_id_exists:
+            stream_data["last_activity_time"] = time.monotonic()
+
+        if ptype == Packet_Type.PACKED_CONTROL_BLOCKS and data:
+            _unpack_from = struct.unpack_from
+            for i in range(0, len(data), 5):
+                if i + 5 > len(data):
+                    break
+                b_ptype, b_stream_id, b_sn = _unpack_from(">BHH", data, i)
+                if b_ptype not in self._valid_packet_types:
+                    continue
+                await self._handle_server_response(
+                    {
+                        "packet_type": b_ptype,
+                        "session_id": self.session_id,
+                        "stream_id": b_stream_id,
+                        "sequence_num": b_sn,
+                    },
+                    b"",
+                )
+            self._send_ping_packet()
+            return
 
         if ptype == Packet_Type.STREAM_SYN_ACK and stream_id_exists:
-            stream_data = self.active_streams[stream_id]
-
             if stream_data.get("stream") or stream_data.get("status") == "ACTIVE":
                 return
-
             if stream_data.get("stream_creating"):
                 return
 
@@ -2116,10 +2211,8 @@ class MasterDnsVPNClient:
                 return
 
             stream_data["stream_creating"] = True
-
             try:
                 stream_data["status"] = "ACTIVE"
-
                 raw_reader = stream_data["reader"]
                 initial_payload = stream_data.get("initial_payload", b"")
                 wrapped_reader = PrependReader(raw_reader, initial_payload)
@@ -2128,6 +2221,7 @@ class MasterDnsVPNClient:
                     stream_id=stream_id,
                     session_id=self.session_id,
                     enqueue_tx_cb=self._client_enqueue_tx,
+                    enqueue_control_tx_cb=self._client_enqueue_control_tx,
                     reader=wrapped_reader,
                     writer=writer,
                     mtu=self.safe_uplink_mtu,
@@ -2135,109 +2229,110 @@ class MasterDnsVPNClient:
                     window_size=int(self.arq_window_size),
                     rto=float(self.arq_initial_rto),
                     max_rto=float(self.arq_max_rto),
+                    enable_control_reliability=True,
+                    control_rto=float(self.config.get("ARQ_CONTROL_INITIAL_RTO", 0.8)),
+                    control_max_rto=float(self.config.get("ARQ_CONTROL_MAX_RTO", 2.5)),
+                    control_max_retries=int(
+                        self.config.get("ARQ_CONTROL_MAX_RETRIES", 40)
+                    ),
                 )
-
                 stream_data["stream"] = stream
+                stream_data.pop("socks_error_packet", None)
                 self.logger.debug(
                     f"<blue>Stream <cyan>{stream_id}</cyan> Established with server.</blue>"
                 )
             finally:
                 stream_data.pop("stream_creating", None)
-                self._send_ping_packet()
-        elif ptype == Packet_Type.SOCKS5_SYN_ACK and stream_id_exists:
-            stream_data = self.active_streams[stream_id]
-            if "handshake_event" in stream_data:
+            self._send_ping_packet()
+            return
+
+        if ptype in self._control_request_ack_map:
+            ack_ptype = self._control_request_ack_map[ptype]
+            await self._enqueue_packet(0, stream_id, sn, ack_ptype, b"")
+            if self._is_socks5_error_packet(ptype) and stream_id_exists:
+                stream_data["socks_error_packet"] = ptype
+                if "handshake_event" in stream_data:
+                    stream_data["handshake_event"].set()
+            self._send_ping_packet()
+            return
+
+        if ptype in self._control_ack_types and stream_id_exists:
+            arq = stream_data.get("stream")
+            if arq:
+                await arq.receive_control_ack(ptype, sn)
+            if ptype == Packet_Type.SOCKS5_SYN_ACK and "handshake_event" in stream_data:
                 stream_data["handshake_event"].set()
             self._send_ping_packet()
-        elif (
+            return
+
+        if (
             ptype in (Packet_Type.STREAM_DATA, Packet_Type.STREAM_RESEND)
             and stream_id_exists
             and data
         ):
-            stream_obj = self.active_streams[stream_id].get("stream")
-            if stream_obj:
-                await stream_obj.receive_data(sn, data)
-            self._send_ping_packet()
-        elif ptype == Packet_Type.STREAM_DATA_ACK and stream_id_exists:
-            stream_obj = self.active_streams[stream_id].get("stream")
-            if stream_obj:
-                await stream_obj.receive_ack(sn)
-            self._send_ping_packet()
-        elif ptype == Packet_Type.STREAM_FIN and stream_id_exists:
-            self._send_ping_packet()
-            stream_data = self.active_streams[stream_id]
             arq = stream_data.get("stream")
-            if (
-                arq
-                and getattr(arq, "_fin_sent", False)
-                and getattr(arq, "_fin_acked", False)
-            ):
-                stream_data["fin_retries"] = 99
+            if arq:
+                await arq.receive_data(sn, data)
+            self._send_ping_packet()
+            return
 
-            if (
-                stream_data.get("status") in ("CLOSING", "TIME_WAIT")
-                or not arq
-                or getattr(arq, "closed", False)
-            ):
-                await self._client_enqueue_tx(0, stream_id, sn, b"", is_fin_ack=True)
+        if ptype == Packet_Type.STREAM_DATA_ACK and stream_id_exists:
+            arq = stream_data.get("stream")
+            if arq:
+                await arq.receive_ack(sn)
+            self._send_ping_packet()
+            return
+
+        if ptype == Packet_Type.STREAM_FIN and stream_id_exists:
+            arq = stream_data.get("stream")
+            if not arq or getattr(arq, "closed", False):
+                await self._enqueue_packet(
+                    0, stream_id, sn, Packet_Type.STREAM_FIN_ACK, b""
+                )
                 return
 
-            arq._fin_received = True
-            arq._fin_seq_received = sn
+            if getattr(arq, "_fin_sent", False) and getattr(arq, "_fin_acked", False):
+                stream_data["fin_retries"] = 99
+
+            arq.mark_fin_received(sn)
             await arq._try_finalize_remote_eof()
-
-        elif ptype == Packet_Type.STREAM_FIN_ACK and stream_id_exists:
-            arq = self.active_streams[stream_id].get("stream")
-            if arq and arq._fin_seq_sent == sn:
-                arq._fin_acked = True
-                if arq._fin_received:
-                    await arq._try_finalize_remote_eof()
-
-        elif ptype == Packet_Type.STREAM_RST and stream_id_exists:
             self._send_ping_packet()
-            await self._client_enqueue_tx(0, stream_id, sn, b"", is_rst_ack=True)
+            return
 
-            arq = self.active_streams[stream_id].get("stream")
+        if ptype == Packet_Type.STREAM_FIN_ACK and stream_id_exists:
+            arq = stream_data.get("stream")
             if arq:
-                arq._rst_received = True
-                arq._rst_seq_received = sn
+                await arq.receive_control_ack(Packet_Type.STREAM_FIN_ACK, sn)
+                if getattr(arq, "_fin_received", False):
+                    await arq._try_finalize_remote_eof()
+            self._send_ping_packet()
+            return
 
+        if ptype == Packet_Type.STREAM_RST and stream_id_exists:
+            await self._enqueue_packet(
+                0, stream_id, sn, Packet_Type.STREAM_RST_ACK, b""
+            )
+            arq = stream_data.get("stream")
+            if arq:
+                arq.mark_rst_received(sn)
             await self.close_stream(
                 stream_id,
                 reason="Remote stream reset",
                 abortive=True,
                 remote_reset=True,
             )
-        elif ptype == Packet_Type.STREAM_RST_ACK and stream_id_exists:
-            arq = self.active_streams[stream_id].get("stream")
-            if arq and getattr(arq, "_rst_seq_sent", None) == sn:
-                arq._rst_acked = True
-                self.active_streams[stream_id]["rst_retries"] = 99
             self._send_ping_packet()
-        elif ptype == Packet_Type.PACKED_CONTROL_BLOCKS and data:
-            _unpack_from = struct.unpack_from
-            for i in range(0, len(data), 5):
-                if i + 5 > len(data):
-                    break
-                b_ptype, b_stream_id, b_sn = _unpack_from(">BHH", data, i)
+            return
 
-                if (
-                    b_ptype == Packet_Type.STREAM_DATA_ACK
-                    and b_stream_id in self.active_streams
-                ):
-                    stream_obj = self.active_streams[b_stream_id].get("stream")
-                    if stream_obj:
-                        await stream_obj.receive_ack(b_sn)
-                elif (
-                    b_ptype == Packet_Type.SOCKS5_SYN_ACK
-                    and b_stream_id in self.active_streams
-                ):
-                    stream_data = self.active_streams[b_stream_id]
-                    if "handshake_event" in stream_data:
-                        stream_data["handshake_event"].set()
-                    self._send_ping_packet()
+        if ptype == Packet_Type.STREAM_RST_ACK and stream_id_exists:
+            arq = stream_data.get("stream")
+            if arq:
+                await arq.receive_control_ack(Packet_Type.STREAM_RST_ACK, sn)
+            stream_data["rst_retries"] = 99
             self._send_ping_packet()
-        elif ptype == Packet_Type.ERROR_DROP:
+            return
+
+        if ptype == Packet_Type.ERROR_DROP:
             if not self.session_restart_event.is_set():
                 self.logger.error(
                     "<red>Session dropped by server (Server Restarted or Invalid). Reconnecting...</red>"
@@ -2320,8 +2415,12 @@ class MasterDnsVPNClient:
                     Packet_Type.STREAM_FIN_ACK,
                     Packet_Type.STREAM_RST,
                     Packet_Type.STREAM_DATA_ACK,
+                    Packet_Type.STREAM_SYN_ACK,
+                    Packet_Type.SOCKS5_SYN_ACK,
                 ):
                     heapq.heappush(self.main_queue, item)
+                    self._inc_priority_counter(self.__dict__, item[0])
+                    self._dec_priority_counter(stream_data, item[0])
             self.tx_event.set()
 
         try:
@@ -2331,6 +2430,7 @@ class MasterDnsVPNClient:
             stream_data.get("track_ack", set()).clear()
             stream_data.get("track_fin", set()).clear()
             stream_data.get("track_syn_ack", set()).clear()
+            stream_data.get("priority_counts", {}).clear()
             stream_data["status"] = "TIME_WAIT"
             stream_data["close_time"] = time.monotonic()
         except Exception:
@@ -2354,7 +2454,9 @@ class MasterDnsVPNClient:
                         s["last_activity_time"] = now
                         self.track_types.discard(Packet_Type.STREAM_SYN)
                         syn_data = b"SY:" + os.urandom(4)
-                        await self._client_enqueue_tx(0, sid, 0, syn_data)
+                        await self._enqueue_packet(
+                            0, sid, 0, Packet_Type.STREAM_SYN, syn_data
+                        )
 
                     elif status == "TIME_WAIT":
                         stream_obj = s.get("stream")

@@ -208,12 +208,14 @@ class MasterDnsVPNServer:
         self._packable_control_types = set(self._control_ack_types)
         self._packable_control_types.update(self._control_request_ack_map.keys())
         self._packable_control_types.add(Packet_Type.STREAM_DATA_ACK)
-        self._packable_control_types.update({
-            Packet_Type.STREAM_SYN,
-            Packet_Type.STREAM_FIN,
-            Packet_Type.STREAM_RST,
-            Packet_Type.SOCKS5_SYN,
-        })
+        self._packable_control_types.update(
+            {
+                Packet_Type.STREAM_SYN,
+                Packet_Type.STREAM_FIN,
+                Packet_Type.STREAM_RST,
+                Packet_Type.SOCKS5_SYN,
+            }
+        )
         self._socks5_rep_packet_map = {
             0x01: Packet_Type.SOCKS5_CONNECT_FAIL,
             0x02: Packet_Type.SOCKS5_RULESET_DENIED,
@@ -370,7 +372,11 @@ class MasterDnsVPNServer:
         elif ptype == Packet_Type.STREAM_FIN:
             owner.get("track_fin", set()).discard(ptype)
             owner.get("track_types", set()).discard(ptype)
-        elif ptype in (Packet_Type.STREAM_SYN, Packet_Type.STREAM_SYN_ACK, Packet_Type.SOCKS5_SYN_ACK):
+        elif ptype in (
+            Packet_Type.STREAM_SYN,
+            Packet_Type.STREAM_SYN_ACK,
+            Packet_Type.SOCKS5_SYN_ACK,
+        ):
             owner.get("track_syn_ack", set()).discard(ptype)
             owner.get("track_types", set()).discard(ptype)
 
@@ -657,7 +663,6 @@ class MasterDnsVPNServer:
         if "unreachable" in msg:
             return Packet_Type.SOCKS5_HOST_UNREACHABLE
 
-
         return Packet_Type.SOCKS5_CONNECT_FAIL
 
     async def _send_socks5_error_packet(
@@ -736,23 +741,34 @@ class MasterDnsVPNServer:
         if stream_data.get("status") == "PENDING":
             stream_data["status"] = "SOCKS_HANDSHAKE"
 
+        frag_id = int(extracted_header.get("fragment_id", 0)) if extracted_header else 0
+        expected_chunk_count = (
+            int(extracted_header.get("total_fragments", 1)) if extracted_header else 1
+        )
+        if expected_chunk_count <= 0:
+            expected_chunk_count = 1
+
+        if stream_data.get("socks_expected_frags") not in (None, expected_chunk_count):
+            # New SOCKS5_SYN series with different fragmentation profile.
+            stream_data["socks_chunks"].clear()
+        stream_data["socks_expected_frags"] = expected_chunk_count
+
         extracted_data = self.dns_parser.extract_vpn_data_from_labels(labels)
         if extracted_data:
-            stream_data["socks_chunks"][sn] = extracted_data
+            stream_data["socks_chunks"][frag_id] = extracted_data
 
         await self._enqueue_packet(
             session_id, 1, stream_id, sn, Packet_Type.STREAM_DATA_ACK, b""
         )
 
         chunks = stream_data["socks_chunks"]
-        chunk_ids = sorted(chunks.keys())
-        if not chunk_ids or chunk_ids[0] != 0:
+        if 0 not in chunks:
             return
 
-        expected_chunk_count = (
-            extracted_header.get("total_fragments", 1) if extracted_header else 1
-        )
         if len(chunks) != expected_chunk_count:
+            return
+
+        if any(i not in chunks for i in range(expected_chunk_count)):
             return
 
         assembled = b"".join(chunks[i] for i in range(expected_chunk_count))
@@ -782,6 +798,7 @@ class MasterDnsVPNServer:
             assembled = assembled[:expected_len]
 
         stream_data["status"] = "SOCKS_CONNECTING"
+        stream_data.get("socks_chunks", {}).clear()
         if self.loop:
             self.loop.create_task(
                 self._process_socks5_target(session_id, stream_id, assembled)
@@ -1310,7 +1327,9 @@ class MasterDnsVPNServer:
                 control_max_retries=int(self.config.get("ARQ_CONTROL_MAX_RETRIES", 40)),
             )
 
-            arq.rcv_nxt = max(stream_data["socks_chunks"].keys()) + 1
+            # SOCKS5_SYN is handled on control-plane now, so ARQ data-plane
+            # sequence must start from 0 for first STREAM_DATA packet.
+            arq.rcv_nxt = 0
 
             stream_data["arq_obj"] = arq
             stream_data["status"] = "CONNECTED"
@@ -2261,4 +2280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
