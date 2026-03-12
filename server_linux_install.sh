@@ -36,10 +36,13 @@ if [[ "${EUID}" -ne 0 ]]; then
   log_error "Run this script as root (sudo)."
 fi
 
-INSTALL_DIR="$(pwd)"
+INSTALL_DIR="$(pwd -P)"
+[[ -n "${PWD:-}" ]] && INSTALL_DIR="$PWD"
+if [[ "$INSTALL_DIR" == /dev/fd* || "$INSTALL_DIR" == /proc/*/fd* ]]; then
+  INSTALL_DIR="$(pwd -P)"
+fi
 log_info "Installation directory: $INSTALL_DIR"
 cd "$INSTALL_DIR" || log_error "Cannot access install directory: $INSTALL_DIR"
-
 if [[ -f "server_config.toml" && -f "server_config.toml.backup" ]]; then
   log_error "Both server_config.toml and server_config.toml.backup exist. Remove one and retry."
 fi
