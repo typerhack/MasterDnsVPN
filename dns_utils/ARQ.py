@@ -869,4 +869,3 @@ class ARQ:
 
         self._clear_all_queues()
         self._set_state(Stream_State.CLOSED)
-

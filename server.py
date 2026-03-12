@@ -130,6 +130,9 @@ class MasterDnsVPNServer(PacketQueueMixin):
         self.session_cleanup_interval = int(
             self.config.get("SESSION_CLEANUP_INTERVAL", 30)
         )
+        self.socks_handshake_timeout = float(
+            self.config.get("SOCKS_HANDSHAKE_TIMEOUT", 120.0)
+        )
 
         self.max_concurrent_requests = asyncio.Semaphore(
             int(self.config.get("MAX_CONCURRENT_REQUESTS", 1000))
@@ -1849,6 +1852,20 @@ class MasterDnsVPNServer(PacketQueueMixin):
                         last_act = stream_data.get("last_activity", now)
                         close_time = stream_data.get("close_time", now)
 
+                        if status in (
+                            "CONNECTING",
+                            "SOCKS_HANDSHAKE",
+                            "SOCKS_CONNECTING",
+                        ):
+                            if (now - last_act) > self.socks_handshake_timeout:
+                                await self.close_stream(
+                                    session_id,
+                                    sid,
+                                    reason="Handshake/connect timeout",
+                                    abortive=True,
+                                )
+                            continue
+
                         if status == "TIME_WAIT":
                             arq_obj = stream_data.get("arq_obj")
 
@@ -1963,17 +1980,6 @@ class MasterDnsVPNServer(PacketQueueMixin):
                             self.logger.debug(
                                 f"Error closing stream {sid} during retransmit check: {e}"
                             )
-
-                    for sid in list(streams.keys()):
-                        stream_data = streams.get(sid)
-                        if not stream_data:
-                            continue
-                        arq_obj = stream_data.get("arq_obj")
-                        if arq_obj:
-                            try:
-                                await arq_obj.check_retransmits()
-                            except Exception as e:
-                                self.logger.error(f"Error in retransmit sid {sid}: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -2195,4 +2201,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

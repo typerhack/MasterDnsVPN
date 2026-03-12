@@ -1430,6 +1430,7 @@ class MasterDnsVPNClient(PacketQueueMixin):
             stop_task.cancel()
         if not restart_task.done():
             restart_task.cancel()
+        await asyncio.gather(stop_task, restart_task, return_exceptions=True)
 
         self.logger.info(
             "<yellow>Cleaning up old connections before reconnecting...</yellow>"
@@ -2468,14 +2469,6 @@ class MasterDnsVPNClient(PacketQueueMixin):
                         self.logger.debug(
                             f"Error closing stream {sid} in retransmit worker: {e}"
                         )
-
-                for sid, s in list(self.active_streams.items()):
-                    arq = s.get("stream")
-                    if arq and hasattr(arq, "check_retransmits"):
-                        try:
-                            await arq.check_retransmits()
-                        except Exception as _:
-                            pass
 
             except asyncio.CancelledError:
                 break
