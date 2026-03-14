@@ -1676,20 +1676,17 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 )
                 return
 
-            if packet_domain.count(".") < 2:
-                self.logger.debug(
-                    f"Received DNS request with insufficient subdomain labels from {addr}. Ignoring."
-                )
+            labels = (
+                packet_domain[: -len("." + packet_main_domain)]
+                if packet_main_domain
+                else ""
+            )
+
+            if not labels:
                 await self._send_parser_response(
                     self.dns_parser.empty_noerror_response, data, addr
                 )
                 return
-
-            labels = (
-                packet_domain[: -len("." + packet_main_domain)]
-                if packet_main_domain
-                else packet_domain
-            )
 
             if len(labels) == 0:
                 self.logger.debug(
