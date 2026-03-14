@@ -191,6 +191,13 @@ class MasterDnsVPNServer(PacketQueueMixin):
             for k, v in Packet_Type.__dict__.items()
             if not k.startswith("__") and isinstance(v, int)
         }
+
+        self._pre_session_packet_types = {
+            Packet_Type.SESSION_INIT,
+            Packet_Type.MTU_UP_REQ,
+            Packet_Type.MTU_DOWN_REQ,
+            Packet_Type.SET_MTU_REQ,
+        }
         self._block_packer = DnsPacketParser.PACKED_CONTROL_BLOCK_STRUCT
         self._stream_packet_handlers = {
             Packet_Type.STREAM_DATA: self._handle_stream_data_packet,
@@ -1265,17 +1272,21 @@ class MasterDnsVPNServer(PacketQueueMixin):
         request_domain: str = "",
         extracted_header: Optional[dict] = None,
     ) -> Optional[bytes]:
+        # First handle packets that don't require an active session (e.g. session init, MTU negotiation).
+        if packet_type in self._pre_session_packet_types:
+            pre_session_response = await self._handle_pre_session_packet(
+                packet_type=packet_type,
+                session_id=session_id,
+                data=data,
+                labels=labels,
+                request_domain=request_domain,
+                extracted_header=extracted_header,
+            )
 
-        pre_session_response = await self._handle_pre_session_packet(
-            packet_type=packet_type,
-            session_id=session_id,
-            data=data,
-            labels=labels,
-            request_domain=request_domain,
-            extracted_header=extracted_header,
-        )
-        if pre_session_response is not None:
-            return pre_session_response
+            if pre_session_response:
+                return pre_session_response
+            else:
+                return None
 
         session = self.sessions.get(session_id)
         if not session:
@@ -1708,6 +1719,9 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 extracted_header = None
 
             if not extracted_header:
+                self.logger.debug(
+                    f"Failed to extract VPN header from labels '{labels}' in request from {addr}. Ignoring."
+                )
                 await self._send_parser_response(
                     self.dns_parser.empty_noerror_response, data, addr
                 )

@@ -1338,6 +1338,7 @@ class DnsPacketParser:
         header_decrypted = _decode(header_encoded, lowerCaseOnly=True)
         if not header_decrypted:
             return None
+
         return _parse(header_decrypted)
 
     def decode_and_decrypt_data(self, encoded_str, lowerCaseOnly=True) -> bytes:
