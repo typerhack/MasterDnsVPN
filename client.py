@@ -86,12 +86,12 @@ class MasterDnsVPNClient(PacketQueueMixin):
             sys.exit(1)
 
         self.logger = getLogger(log_level=self.config.get("LOG_LEVEL", "INFO"))
-        auto_cpu_workers = max(2, min(16, (os.cpu_count() or 1)))
+        detected_cpu_workers = max(1, int(os.cpu_count() or 1))
         raw_cpu_workers = int(self.config.get("CPU_WORKER_THREADS", 0))
         if raw_cpu_workers < 0:
             self.cpu_worker_threads = 0
         elif raw_cpu_workers == 0:
-            self.cpu_worker_threads = auto_cpu_workers
+            self.cpu_worker_threads = detected_cpu_workers
         else:
             self.cpu_worker_threads = raw_cpu_workers
 

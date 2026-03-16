@@ -115,7 +115,7 @@ DNS_REQUEST_WORKERS = 4
 # CPU thread-pool size for parser/codec offload.
 # 0 = auto (recommended). Set a positive number to force size. Set -1 to disable.
 # For a 2-core system, 2 is a safer default than an aggressive auto profile.
-CPU_WORKER_THREADS = -1
+CPU_WORKER_THREADS = 0
 
 # Max packed control blocks per response cycle (user upper bound).
 # Runtime value = min(MAX_PACKETS_PER_BATCH, MTU-based download limit).
