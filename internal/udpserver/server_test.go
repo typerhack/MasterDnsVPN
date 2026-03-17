@@ -20,7 +20,7 @@ func TestHandlePacketDropsDNSResponses(t *testing.T) {
 		MaxPacketSize:     65535,
 		Domain:            []string{"a.com"},
 		MinVPNLabelLength: 3,
-	}, nil)
+	}, nil, nil)
 
 	packet := buildServerTestQuery(0x1001, "vpn.a.com", enums.DNSRecordTypeTXT)
 	packet[2] |= 0x80
@@ -35,7 +35,7 @@ func TestHandlePacketReturnsNoDataForUnauthorizedDomain(t *testing.T) {
 		MaxPacketSize:     65535,
 		Domain:            []string{"a.com"},
 		MinVPNLabelLength: 3,
-	}, nil)
+	}, nil, nil)
 
 	packet := buildServerTestQuery(0x2002, "evil.com", enums.DNSRecordTypeTXT)
 	response := srv.handlePacket(packet)

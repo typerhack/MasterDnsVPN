@@ -35,7 +35,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := udpserver.New(cfg, log)
+	codec, err := security.NewCodecFromConfig(cfg, keyInfo.Key)
+	if err != nil {
+		log.Errorf("[X] <red>Encryption Codec Setup Failed</red>: <yellow>%v</yellow>", err)
+		os.Exit(1)
+	}
+
+	srv := udpserver.New(cfg, log, codec)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

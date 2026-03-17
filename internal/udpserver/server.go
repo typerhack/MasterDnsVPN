@@ -19,11 +19,13 @@ import (
 	"masterdnsvpn-go/internal/dnsparser"
 	"masterdnsvpn-go/internal/domainmatcher"
 	"masterdnsvpn-go/internal/logger"
+	"masterdnsvpn-go/internal/security"
 )
 
 type Server struct {
 	cfg             config.ServerConfig
 	log             *logger.Logger
+	codec           *security.Codec
 	domainMatcher   *domainmatcher.Matcher
 	packetPool      sync.Pool
 	droppedPackets  atomic.Uint64
@@ -36,10 +38,11 @@ type request struct {
 	addr *net.UDPAddr
 }
 
-func New(cfg config.ServerConfig, log *logger.Logger) *Server {
+func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Server {
 	return &Server{
 		cfg:           cfg,
 		log:           log,
+		codec:         codec,
 		domainMatcher: domainmatcher.New(cfg.Domain, cfg.MinVPNLabelLength),
 		packetPool: sync.Pool{
 			New: func() any {
