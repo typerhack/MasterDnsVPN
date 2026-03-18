@@ -16,7 +16,8 @@ import (
 )
 
 type localDNSRequest struct {
-	packet []byte
+	buffer []byte
+	size   int
 	addr   *net.UDPAddr
 }
 
@@ -44,12 +45,18 @@ func (c *Client) RunLocalDNSListener(ctx context.Context) error {
 	)
 
 	queue := make(chan localDNSRequest, c.cfg.LocalDNSQueueSize)
+	packetPool := sync.Pool{
+		New: func() any {
+			return make([]byte, EDnsSafeUDPSize)
+		},
+	}
+
 	var workerWG sync.WaitGroup
 	for range c.cfg.LocalDNSWorkers {
 		workerWG.Add(1)
 		go func() {
 			defer workerWG.Done()
-			c.localDNSWorker(ctx, conn, queue)
+			c.localDNSWorker(ctx, conn, queue, &packetPool)
 		}()
 	}
 
@@ -59,28 +66,30 @@ func (c *Client) RunLocalDNSListener(ctx context.Context) error {
 	}()
 	go c.runLocalDNSCacheFlushLoop(ctx)
 
-	buffer := make([]byte, EDnsSafeUDPSize)
 	for {
+		buffer := packetPool.Get().([]byte)
 		n, addr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
+			packetPool.Put(buffer)
 			if ctx.Err() != nil {
 				break
 			}
 			return err
 		}
 
-		packet := append([]byte(nil), buffer[:n]...)
 		select {
-		case queue <- localDNSRequest{packet: packet, addr: addr}:
+		case queue <- localDNSRequest{buffer: buffer, size: n, addr: addr}:
 		case <-ctx.Done():
+			packetPool.Put(buffer)
 			close(queue)
 			workerWG.Wait()
 			return nil
 		default:
-			response, _ := DnsParser.BuildServerFailureResponse(packet)
+			response, _ := DnsParser.BuildServerFailureResponse(buffer[:n])
 			if len(response) != 0 {
 				_, _ = conn.WriteToUDP(response, addr)
 			}
+			packetPool.Put(buffer)
 		}
 	}
 
@@ -89,7 +98,7 @@ func (c *Client) RunLocalDNSListener(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) localDNSWorker(ctx context.Context, conn *net.UDPConn, queue <-chan localDNSRequest) {
+func (c *Client) localDNSWorker(ctx context.Context, conn *net.UDPConn, queue <-chan localDNSRequest, packetPool *sync.Pool) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -100,11 +109,18 @@ func (c *Client) localDNSWorker(ctx context.Context, conn *net.UDPConn, queue <-
 			}
 			func() {
 				defer func() {
-					if recover() != nil {
-						return
+					if packetPool != nil && req.buffer != nil {
+						packetPool.Put(req.buffer)
+					}
+					if recovered := recover(); recovered != nil && c != nil && c.log != nil {
+						c.log.Errorf(
+							"💥 <red>Local DNS Handler Panic Recovered</red> <magenta>|</magenta> <yellow>%v</yellow>",
+							recovered,
+						)
 					}
 				}()
-				response, _ := c.handleDNSQueryPacket(req.packet)
+
+				response, _ := c.handleDNSQueryPacket(req.buffer[:req.size])
 				if len(response) != 0 {
 					_, _ = conn.WriteToUDP(response, req.addr)
 				}

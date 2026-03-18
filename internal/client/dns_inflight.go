@@ -13,18 +13,25 @@ import (
 )
 
 type dnsInflightManager struct {
-	timeout time.Duration
-	mu      sync.Mutex
-	items   map[string]time.Time
+	timeout       time.Duration
+	cleanupWindow time.Duration
+	nextCleanupAt time.Time
+	mu            sync.Mutex
+	items         map[string]time.Time
 }
 
 func newDNSInflightManager(timeout time.Duration) *dnsInflightManager {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	cleanupWindow := timeout / 4
+	if cleanupWindow < time.Second {
+		cleanupWindow = time.Second
+	}
 	return &dnsInflightManager{
-		timeout: timeout,
-		items:   make(map[string]time.Time),
+		timeout:       timeout,
+		cleanupWindow: cleanupWindow,
+		items:         make(map[string]time.Time),
 	}
 }
 
@@ -37,10 +44,13 @@ func (m *dnsInflightManager) Begin(cacheKey []byte, now time.Time) bool {
 	defer m.mu.Unlock()
 
 	key := string(cacheKey)
-	for existingKey, createdAt := range m.items {
-		if now.Sub(createdAt) >= m.timeout {
-			delete(m.items, existingKey)
+	if m.nextCleanupAt.IsZero() || !now.Before(m.nextCleanupAt) {
+		for existingKey, createdAt := range m.items {
+			if now.Sub(createdAt) >= m.timeout {
+				delete(m.items, existingKey)
+			}
 		}
+		m.nextCleanupAt = now.Add(m.cleanupWindow)
 	}
 
 	if createdAt, ok := m.items[key]; ok && now.Sub(createdAt) < m.timeout {
