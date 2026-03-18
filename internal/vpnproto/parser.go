@@ -223,8 +223,6 @@ func buildPacketFlags() [256]uint8 {
 		ENUMS.PacketMTUDownReq,
 		ENUMS.PacketSessionInit,
 		ENUMS.PacketSessionAccept,
-		ENUMS.PacketSetMTUReq,
-		ENUMS.PacketSetMTURes,
 		ENUMS.PacketPing,
 		ENUMS.PacketPong,
 		ENUMS.PacketErrorDrop,

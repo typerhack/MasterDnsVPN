@@ -14,8 +14,6 @@ const (
 	PacketMTUDownRes                      = 0x04
 	PacketSessionInit                     = 0x05
 	PacketSessionAccept                   = 0x06
-	PacketSetMTUReq                       = 0x07
-	PacketSetMTURes                       = 0x08
 	PacketPing                            = 0x09
 	PacketPong                            = 0x0A
 	PacketStreamSyn                       = 0x0B

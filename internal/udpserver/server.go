@@ -35,14 +35,16 @@ const (
 )
 
 type Server struct {
-	cfg             config.ServerConfig
-	log             *logger.Logger
-	codec           *security.Codec
-	domainMatcher   *domainmatcher.Matcher
-	sessions        *sessionStore
-	packetPool      sync.Pool
-	droppedPackets  atomic.Uint64
-	lastDropLogUnix atomic.Int64
+	cfg                     config.ServerConfig
+	log                     *logger.Logger
+	codec                   *security.Codec
+	domainMatcher           *domainmatcher.Matcher
+	sessions                *sessionStore
+	uploadCompressionMask   uint8
+	downloadCompressionMask uint8
+	packetPool              sync.Pool
+	droppedPackets          atomic.Uint64
+	lastDropLogUnix         atomic.Int64
 }
 
 type request struct {
@@ -53,11 +55,13 @@ type request struct {
 
 func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Server {
 	return &Server{
-		cfg:           cfg,
-		log:           log,
-		codec:         codec,
-		domainMatcher: domainmatcher.New(cfg.Domain, cfg.MinVPNLabelLength),
-		sessions:      newSessionStore(),
+		cfg:                     cfg,
+		log:                     log,
+		codec:                   codec,
+		domainMatcher:           domainmatcher.New(cfg.Domain, cfg.MinVPNLabelLength),
+		sessions:                newSessionStore(),
+		uploadCompressionMask:   buildCompressionMask(cfg.SupportedUploadCompressionTypes),
+		downloadCompressionMask: buildCompressionMask(cfg.SupportedDownloadCompressionTypes),
 		packetPool: sync.Pool{
 			New: func() any {
 				return make([]byte, cfg.MaxPacketSize)
@@ -273,7 +277,11 @@ func (s *Server) handleSessionInitRequest(questionPacket []byte, decision domain
 	if vpnPacket.SessionID != 0 {
 		return nil
 	}
-	record, _, err := s.sessions.findOrCreate(vpnPacket.Payload)
+	requestedUpload, requestedDownload := compression.SplitPair(vpnPacket.Payload[1])
+	resolvedUpload := resolveCompressionType(requestedUpload, s.uploadCompressionMask)
+	resolvedDownload := resolveCompressionType(requestedDownload, s.downloadCompressionMask)
+
+	record, _, err := s.sessions.findOrCreate(vpnPacket.Payload, resolvedUpload, resolvedDownload)
 	if err != nil || record == nil {
 		return nil
 	}
@@ -293,6 +301,25 @@ func (s *Server) handleSessionInitRequest(questionPacket []byte, decision domain
 		return nil
 	}
 	return response
+}
+
+func buildCompressionMask(values []int) uint8 {
+	var mask uint8 = 1 << compression.TypeOff
+	for _, value := range values {
+		if value < compression.TypeOff || value > compression.TypeZLIB {
+			continue
+		}
+		mask |= 1 << uint8(value)
+	}
+	return mask
+}
+
+func resolveCompressionType(requested uint8, allowedMask uint8) uint8 {
+	requested = compression.NormalizeType(requested)
+	if allowedMask&(1<<requested) != 0 {
+		return requested
+	}
+	return compression.TypeOff
 }
 
 func (s *Server) onDrop(addr *net.UDPAddr) {

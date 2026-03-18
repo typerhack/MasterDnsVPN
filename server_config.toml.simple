@@ -34,6 +34,11 @@ DROP_LOG_INTERVAL_SECONDS = 2.0
 # Allowed tunnel domains.
 DOMAIN = ["v.domain.com"]
 
+# Compression types allowed by server policy:
+# 0=OFF, 1=ZSTD, 2=LZ4, 3=ZLIB
+SUPPORTED_UPLOAD_COMPRESSION_TYPES = [0, 1, 2, 3]
+SUPPORTED_DOWNLOAD_COMPRESSION_TYPES = [0, 1, 2, 3]
+
 # Encryption method:
 # 0=None, 1=XOR, 2=ChaCha20, 3=AES-128-GCM, 4=AES-192-GCM, 5=AES-256-GCM
 DATA_ENCRYPTION_METHOD = 1

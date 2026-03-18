@@ -249,11 +249,41 @@ func TestHandlePacketRejectsMalformedSessionInit(t *testing.T) {
 	}
 }
 
+func TestHandlePacketNegotiatesUnsupportedCompressionToOff(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	srv := New(config.ServerConfig{
+		MaxPacketSize:                     65535,
+		Domain:                            []string{"a.com"},
+		MinVPNLabelLength:                 3,
+		SupportedUploadCompressionTypes:   []int{0, 1},
+		SupportedDownloadCompressionTypes: []int{0},
+	}, nil, codec)
+
+	payload := []byte{1, 0x13, 0x00, 0x96, 0x00, 0xC8, 0x44, 0x33, 0x22, 0x11}
+	query := buildTunnelQueryWithSessionID(t, codec, "a.com", 0, ENUMS.PacketSessionInit, payload)
+	response := srv.handlePacket(query)
+	if len(response) == 0 {
+		t.Fatal("handlePacket should return a session accept response")
+	}
+
+	packet, err := DnsParser.ExtractVPNResponse(response, true)
+	if err != nil {
+		t.Fatalf("ExtractVPNResponse returned error: %v", err)
+	}
+	if got := packet.Payload[2]; got != 0x10 {
+		t.Fatalf("unexpected negotiated compression pair: got=%#x want=%#x", got, 0x10)
+	}
+}
+
 func TestSessionStoreExpiresReuseSignatureWithoutDroppingSession(t *testing.T) {
 	store := newSessionStore()
 	payload := []byte{1, 0x21, 0x00, 0x96, 0x00, 0xC8, 0x44, 0x33, 0x22, 0x11}
 
-	record, reused, err := store.findOrCreate(payload)
+	record, reused, err := store.findOrCreate(payload, 2, 1)
 	if err != nil {
 		t.Fatalf("findOrCreate returned error: %v", err)
 	}

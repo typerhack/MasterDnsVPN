@@ -32,8 +32,6 @@ func TestPacketEnumValuesAreUnique(t *testing.T) {
 		PacketMTUDownRes,
 		PacketSessionInit,
 		PacketSessionAccept,
-		PacketSetMTUReq,
-		PacketSetMTURes,
 		PacketPing,
 		PacketPong,
 		PacketStreamSyn,

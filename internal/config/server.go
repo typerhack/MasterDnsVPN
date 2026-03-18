@@ -18,21 +18,23 @@ import (
 )
 
 type ServerConfig struct {
-	ConfigDir             string   `toml:"-"`
-	ConfigPath            string   `toml:"-"`
-	UDPHost               string   `toml:"UDP_HOST"`
-	UDPPort               int      `toml:"UDP_PORT"`
-	UDPReaders            int      `toml:"UDP_READERS"`
-	SocketBufferSize      int      `toml:"SOCKET_BUFFER_SIZE"`
-	MaxConcurrentRequests int      `toml:"MAX_CONCURRENT_REQUESTS"`
-	DNSRequestWorkers     int      `toml:"DNS_REQUEST_WORKERS"`
-	MaxPacketSize         int      `toml:"MAX_PACKET_SIZE"`
-	DropLogIntervalSecs   float64  `toml:"DROP_LOG_INTERVAL_SECONDS"`
-	Domain                []string `toml:"DOMAIN"`
-	MinVPNLabelLength     int      `toml:"MIN_VPN_LABEL_LENGTH"`
-	DataEncryptionMethod  int      `toml:"DATA_ENCRYPTION_METHOD"`
-	EncryptionKeyFile     string   `toml:"ENCRYPTION_KEY_FILE"`
-	LogLevel              string   `toml:"LOG_LEVEL"`
+	ConfigDir                         string   `toml:"-"`
+	ConfigPath                        string   `toml:"-"`
+	UDPHost                           string   `toml:"UDP_HOST"`
+	UDPPort                           int      `toml:"UDP_PORT"`
+	UDPReaders                        int      `toml:"UDP_READERS"`
+	SocketBufferSize                  int      `toml:"SOCKET_BUFFER_SIZE"`
+	MaxConcurrentRequests             int      `toml:"MAX_CONCURRENT_REQUESTS"`
+	DNSRequestWorkers                 int      `toml:"DNS_REQUEST_WORKERS"`
+	MaxPacketSize                     int      `toml:"MAX_PACKET_SIZE"`
+	DropLogIntervalSecs               float64  `toml:"DROP_LOG_INTERVAL_SECONDS"`
+	Domain                            []string `toml:"DOMAIN"`
+	MinVPNLabelLength                 int      `toml:"MIN_VPN_LABEL_LENGTH"`
+	SupportedUploadCompressionTypes   []int    `toml:"SUPPORTED_UPLOAD_COMPRESSION_TYPES"`
+	SupportedDownloadCompressionTypes []int    `toml:"SUPPORTED_DOWNLOAD_COMPRESSION_TYPES"`
+	DataEncryptionMethod              int      `toml:"DATA_ENCRYPTION_METHOD"`
+	EncryptionKeyFile                 string   `toml:"ENCRYPTION_KEY_FILE"`
+	LogLevel                          string   `toml:"LOG_LEVEL"`
 }
 
 func defaultServerConfig() ServerConfig {
@@ -41,19 +43,21 @@ func defaultServerConfig() ServerConfig {
 	readers := min(max(runtime.NumCPU()/2, 1), 4)
 
 	return ServerConfig{
-		UDPHost:               "0.0.0.0",
-		UDPPort:               53,
-		UDPReaders:            readers,
-		SocketBufferSize:      8 * 1024 * 1024,
-		MaxConcurrentRequests: 4096,
-		DNSRequestWorkers:     workers,
-		MaxPacketSize:         65535,
-		DropLogIntervalSecs:   2.0,
-		Domain:                nil,
-		MinVPNLabelLength:     3,
-		DataEncryptionMethod:  1,
-		EncryptionKeyFile:     "encrypt_key.txt",
-		LogLevel:              "INFO",
+		UDPHost:                           "0.0.0.0",
+		UDPPort:                           53,
+		UDPReaders:                        readers,
+		SocketBufferSize:                  8 * 1024 * 1024,
+		MaxConcurrentRequests:             4096,
+		DNSRequestWorkers:                 workers,
+		MaxPacketSize:                     65535,
+		DropLogIntervalSecs:               2.0,
+		Domain:                            nil,
+		MinVPNLabelLength:                 3,
+		SupportedUploadCompressionTypes:   []int{0, 1, 2, 3},
+		SupportedDownloadCompressionTypes: []int{0, 1, 2, 3},
+		DataEncryptionMethod:              1,
+		EncryptionKeyFile:                 "encrypt_key.txt",
+		LogLevel:                          "INFO",
 	}
 }
 
@@ -110,6 +114,8 @@ func LoadServerConfig(filename string) (ServerConfig, error) {
 	if cfg.MinVPNLabelLength <= 0 {
 		cfg.MinVPNLabelLength = 3
 	}
+	cfg.SupportedUploadCompressionTypes = normalizeCompressionTypeList(cfg.SupportedUploadCompressionTypes)
+	cfg.SupportedDownloadCompressionTypes = normalizeCompressionTypeList(cfg.SupportedDownloadCompressionTypes)
 
 	if cfg.DataEncryptionMethod < 0 || cfg.DataEncryptionMethod > 5 {
 		cfg.DataEncryptionMethod = 1
@@ -142,4 +148,24 @@ func (c ServerConfig) EncryptionKeyPath() string {
 		return c.EncryptionKeyFile
 	}
 	return filepath.Join(c.ConfigDir, c.EncryptionKeyFile)
+}
+
+func normalizeCompressionTypeList(values []int) []int {
+	if len(values) == 0 {
+		return []int{0}
+	}
+
+	seen := [4]bool{}
+	out := make([]int, 0, len(values))
+	for _, value := range values {
+		if value < 0 || value > 3 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return []int{0}
+	}
+	return out
 }

@@ -54,7 +54,7 @@ func newSessionStore() *sessionStore {
 	}
 }
 
-func (s *sessionStore) findOrCreate(payload []byte) (*sessionRecord, bool, error) {
+func (s *sessionStore) findOrCreate(payload []byte, uploadCompressionType uint8, downloadCompressionType uint8) (*sessionRecord, bool, error) {
 	if len(payload) != sessionInitDataSize || !isValidSessionResponseMode(payload[0]) {
 		return nil, false, nil
 	}
@@ -89,7 +89,8 @@ func (s *sessionStore) findOrCreate(payload []byte) (*sessionRecord, bool, error
 		ReuseUntil:   now.Add(sessionInitTTL),
 		Signature:    signature,
 	}
-	record.UploadCompression, record.DownloadCompression = compression.SplitPair(payload[1])
+	record.UploadCompression = compression.NormalizeType(uploadCompressionType)
+	record.DownloadCompression = compression.NormalizeType(downloadCompressionType)
 	record.UploadMTU = clampMTU(binary.BigEndian.Uint16(payload[2:4]))
 	record.DownloadMTU = clampMTU(binary.BigEndian.Uint16(payload[4:6]))
 	copy(record.VerifyCode[:], payload[6:10])
