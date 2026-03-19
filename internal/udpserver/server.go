@@ -39,6 +39,8 @@ const (
 	mtuProbeMetaLength  = mtuProbeCodeLength + 2
 	mtuProbeUpMinSize   = 1 + mtuProbeCodeLength
 	mtuProbeDownMinSize = mtuProbeUpMinSize + 2
+	mtuProbeMinDownSize = 30
+	mtuProbeMaxDownSize = 4096
 	sessionAcceptSize   = 7
 )
 
@@ -70,6 +72,8 @@ type Server struct {
 	socksConnectTimeout      time.Duration
 	streamOutboundTTL        time.Duration
 	streamOutboundMaxRetry   int
+	mtuProbePayloadPool      sync.Pool
+	mtuProbeFillPattern      [256]byte
 	packetPool               sync.Pool
 	droppedPackets           atomic.Uint64
 	lastDropLogUnix          atomic.Int64
@@ -123,6 +127,12 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 		socksConnectTimeout:      cfg.SOCKSConnectTimeout(),
 		streamOutboundTTL:        cfg.StreamOutboundTTL(),
 		streamOutboundMaxRetry:   cfg.StreamOutboundMaxRetries,
+		mtuProbePayloadPool: sync.Pool{
+			New: func() any {
+				return make([]byte, mtuProbeMaxDownSize)
+			},
+		},
+		mtuProbeFillPattern: buildMTUProbeFillPattern(),
 		packetPool: sync.Pool{
 			New: func() any {
 				return make([]byte, cfg.MaxPacketSize)
@@ -634,17 +644,17 @@ func (s *Server) handleMTUDownRequest(questionPacket []byte, _ DnsParser.LitePac
 		return nil
 	}
 	downloadSize := int(binary.BigEndian.Uint16(vpnPacket.Payload[mtuProbeUpMinSize:mtuProbeDownMinSize]))
-	if downloadSize < 30 || downloadSize > 4096 {
+	if downloadSize < mtuProbeMinDownSize || downloadSize > mtuProbeMaxDownSize {
 		return nil
 	}
 
-	payload := make([]byte, downloadSize)
+	payloadBuffer := s.mtuProbePayloadPool.Get().([]byte)
+	defer s.mtuProbePayloadPool.Put(payloadBuffer)
+	payload := payloadBuffer[:downloadSize]
 	copy(payload[:mtuProbeCodeLength], vpnPacket.Payload[1:mtuProbeUpMinSize])
 	binary.BigEndian.PutUint16(payload[mtuProbeCodeLength:], uint16(downloadSize))
 	if downloadSize > mtuProbeMetaLength {
-		if _, err := rand.Read(payload[mtuProbeMetaLength:]); err != nil {
-			return nil
-		}
+		fillMTUProbeBytes(payload[mtuProbeMetaLength:], s.mtuProbeFillPattern[:])
 	}
 
 	response, err := DnsParser.BuildVPNResponsePacket(questionPacket, decision.RequestName, VpnProto.Packet{
@@ -656,9 +666,11 @@ func (s *Server) handleMTUDownRequest(questionPacket []byte, _ DnsParser.LitePac
 		TotalFragments: vpnPacket.TotalFragments,
 		Payload:        payload,
 	}, baseEncode)
+
 	if err != nil {
 		return nil
 	}
+
 	return response
 }
 
@@ -678,6 +690,27 @@ func buildMTUProbeMetaPayload(probeCode []byte, payloadLen int) [mtuProbeMetaLen
 	copy(payload[:mtuProbeCodeLength], probeCode)
 	binary.BigEndian.PutUint16(payload[mtuProbeCodeLength:], uint16(payloadLen))
 	return payload
+}
+
+func buildMTUProbeFillPattern() [256]byte {
+	var pattern [256]byte
+	var state uint32 = 0x9E3779B9
+	for i := range pattern {
+		state = state*1664525 + 1013904223
+		pattern[i] = byte(state >> 24)
+	}
+	return pattern
+}
+
+func fillMTUProbeBytes(dst []byte, pattern []byte) {
+	if len(dst) == 0 || len(pattern) == 0 {
+		return
+	}
+
+	copied := copy(dst, pattern)
+	for copied < len(dst) {
+		copied += copy(dst[copied:], dst[:copied])
+	}
 }
 
 func (s *Server) handlePingRequest(questionPacket []byte, decision domainMatcher.Decision, vpnPacket VpnProto.Packet, sessionRecord *sessionRuntimeView) []byte {
