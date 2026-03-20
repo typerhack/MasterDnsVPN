@@ -27,12 +27,24 @@ func BuildRaw(opts BuildOptions) ([]byte, error) {
 		return nil, ErrInvalidPacketType
 	}
 
-	headerLen := HeaderRawSize(opts.PacketType)
+	headerLen := 2 + integrityLength // SessionID + PacketType + SessionCookie + Integrity
+	if flags&packetFlagStream != 0 {
+		headerLen += 2
+	}
+	if flags&packetFlagSequence != 0 {
+		headerLen += 2
+	}
+	if flags&packetFlagFragment != 0 {
+		headerLen += 2
+	}
+	if flags&packetFlagCompression != 0 {
+		headerLen++
+	}
+
 	raw := make([]byte, headerLen+len(opts.Payload))
-	offset := 0
-	raw[offset] = opts.SessionID
-	raw[offset+1] = opts.PacketType
-	offset += 2
+	raw[0] = opts.SessionID
+	raw[1] = opts.PacketType
+	offset := 2
 
 	if flags&packetFlagStream != 0 {
 		raw[offset] = byte(opts.StreamID >> 8)
