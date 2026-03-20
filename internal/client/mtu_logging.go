@@ -45,7 +45,7 @@ func (c *Client) logMTUStart(workerCount int) {
 	}
 	c.log.Infof("%s", strings.Repeat("=", 80))
 	c.log.Infof(
-		"<y>Testing MTU sizes for all resolver-domain pairs (parallel=%d)...</y>",
+		"<yellow>Testing MTU sizes for all resolver-domain pairs (parallel=%d)...</yellow>",
 		workerCount,
 	)
 }
@@ -88,13 +88,13 @@ func (c *Client) logMTUCompletion(validConns []Connection) {
 	}
 	c.log.Infof("%s", strings.Repeat("-", 80))
 	c.log.Infof(
-		"<cyan>Synced MTU</cyan> <magenta>|</magenta> <blue>Upload</blue>: <green>%d</green> <magenta>|</magenta> <blue>Download</blue>: <green>%d</green> <magenta>|</magenta> <blue>Upload Chars</blue>: <green>%d</green>",
+		"\U0001F4CF <green>Synced MTU Upload: <cyan>%d</cyan> Download: <cyan>%d</cyan> (Chars: <cyan>%d</cyan>)</green>",
 		c.syncedUploadMTU,
 		c.syncedDownloadMTU,
 		c.syncedUploadChars,
 	)
 	c.log.Infof(
-		"<cyan>MTU Spread</cyan> <magenta>|</magenta> <blue>Max Upload</blue>: <green>%d</green> <magenta>|</magenta> <blue>Max Download</blue>: <green>%d</green>",
+		"\U0001F4CF <green>MTU Spread Max Upload: <cyan>%d</cyan> Max Download: <cyan>%d</cyan></green>",
 		maxFoundUpload,
 		maxFoundDownload,
 	)

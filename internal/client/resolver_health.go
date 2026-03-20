@@ -392,7 +392,7 @@ func (c *Client) runResolverRecheckBatch(now time.Time) {
 
 		if c.resolverHealthDebugEnabled() {
 			c.log.Debugf(
-				"\U0001F50D <cyan>Rechecking inactive resolver</cyan> <magenta>|</magenta> <blue>Resolver</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>Runtime Priority</blue>: <yellow>%t</yellow> <magenta>|</magenta> <blue>Fail Count</blue>: <cyan>%d</cyan>",
+				"\U0001F50D <green>Rechecking inactive resolver: <cyan>%s</cyan> (Priority: <cyan>%t</cyan>, Failures: <cyan>%d</cyan>)</green>",
 				conn.ResolverLabel,
 				candidate.runtimePriority,
 				candidate.failCount,
@@ -411,7 +411,7 @@ func (c *Client) runResolverRecheckBatch(now time.Time) {
 			failCount := c.resolverRecheck[candidate.key].FailCount
 			c.resolverHealthMu.Unlock()
 			c.log.Debugf(
-				"\u23ED\uFE0F <yellow>Inactive resolver recheck failed</yellow> <magenta>|</magenta> <blue>Resolver</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>Fail Count</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Next Retry In</blue>: <cyan>%s</cyan>",
+				"\u23ED\uFE0F <yellow>Inactive resolver recheck failed: <cyan>%s</cyan> (Failures: <cyan>%d</cyan>, Next Retry: <cyan>%s</cyan>)</yellow>",
 				conn.ResolverLabel,
 				failCount,
 				maxDuration(0, time.Until(nextAt)).Round(time.Second),

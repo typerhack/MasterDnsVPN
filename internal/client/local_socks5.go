@@ -36,7 +36,7 @@ func (c *Client) RunLocalSOCKS5Listener(ctx context.Context) error {
 		net.JoinHostPort(c.cfg.ListenIP, strconv.Itoa(c.cfg.ListenPort)),
 		func() {
 			c.log.Infof(
-				"\U0001F9E6 <green>Local SOCKS5 Listener Ready</green> <magenta>|</magenta> <blue>Addr</blue>: <cyan>%s:%d</cyan>",
+				"\U0001F9E6 <green>Local SOCKS5 Listener Ready Addr: <cyan>%s:%d</cyan></green>",
 				c.cfg.ListenIP,
 				c.cfg.ListenPort,
 			)
@@ -49,7 +49,7 @@ func (c *Client) handleLocalSOCKS5Conn(conn net.Conn) {
 	withLocalConnLifecycle(conn, func(recovered any) {
 		if c.log != nil {
 			c.log.Errorf(
-				"\U0001F4A5 <red>SOCKS5 Handler Panic Recovered</red> <magenta>|</magenta> <yellow>%v</yellow>",
+				"\U0001F4A5 <red>SOCKS5 Handler Panic Recovered: <yellow>%v</yellow></red>",
 				recovered,
 			)
 		}
@@ -81,7 +81,7 @@ func (c *Client) handleLocalSOCKS5Conn(conn net.Conn) {
 			_ = conn.SetDeadline(time.Time{})
 			if err := c.runLocalSOCKS5UDPAssociate(conn); err != nil && c.log != nil {
 				c.log.Debugf(
-					"\U0001F9E6 <yellow>SOCKS5 UDP Associate Closed</yellow> <magenta>|</magenta> <cyan>%v</cyan>",
+					"\U0001F9E6 <yellow>SOCKS5 UDP Associate Closed: <cyan>%v</cyan></yellow>",
 					err,
 				)
 			}

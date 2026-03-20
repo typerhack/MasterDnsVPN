@@ -23,7 +23,7 @@ func (c *Client) RunLocalTCPListener(ctx context.Context) error {
 		net.JoinHostPort(c.cfg.ListenIP, strconv.Itoa(c.cfg.ListenPort)),
 		func() {
 			c.log.Infof(
-				"\U0001F50C <green>Local TCP Listener Ready</green> <magenta>|</magenta> <blue>Addr</blue>: <cyan>%s:%d</cyan>",
+				"\U0001F50C <green>Local TCP Listener Ready Addr: <cyan>%s:%d</cyan></green>",
 				c.cfg.ListenIP,
 				c.cfg.ListenPort,
 			)
@@ -36,7 +36,7 @@ func (c *Client) handleLocalTCPConn(conn net.Conn) {
 	withLocalConnLifecycle(conn, func(recovered any) {
 		if c.log != nil {
 			c.log.Errorf(
-				"\U0001F4A5 <red>Local TCP Handler Panic Recovered</red> <magenta>|</magenta> <yellow>%v</yellow>",
+				"\U0001F4A5 <red>Local TCP Handler Panic Recovered: <yellow>%v</yellow></red>",
 				recovered,
 			)
 		}

@@ -312,9 +312,9 @@ func (c *Client) runClientStreamTXLoop(stream *clientStream, timeout time.Durati
 		if recovered := recover(); recovered != nil {
 			if c.log != nil {
 				c.log.Errorf(
-					"💥 <red>Client Stream TX Loop Panic Recovered</red> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <yellow>%v</yellow>",
-					stream.ID,
+					"💥 <red>Client Stream TX Loop Panic: <cyan>%v</cyan> (Stream ID: <cyan>%d</cyan>)</red>",
 					recovered,
+					stream.ID,
 				)
 			}
 			_ = c.queueStreamPacket(stream, Enums.PACKET_STREAM_RST, nil)
@@ -539,9 +539,9 @@ func (c *Client) runLocalStreamReadLoop(stream *clientStream, timeout time.Durat
 		if recovered := recover(); recovered != nil {
 			if c.log != nil {
 				c.log.Errorf(
-					"💥 <red>Client Stream Read Loop Panic Recovered</red> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <yellow>%v</yellow>",
-					stream.ID,
+					"💥 <red>Client Stream Read Loop Panic: <cyan>%v</cyan> (Stream ID: <cyan>%d</cyan>)</red>",
 					recovered,
+					stream.ID,
 				)
 			}
 			_ = c.queueStreamPacket(stream, Enums.PACKET_STREAM_RST, nil)

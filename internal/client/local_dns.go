@@ -40,7 +40,7 @@ func (c *Client) RunLocalDNSListener(ctx context.Context) error {
 	defer conn.Close()
 
 	c.log.Infof(
-		"\U0001F4E1 <green>Local DNS Listener Ready</green> <magenta>|</magenta> <blue>Addr</blue>: <cyan>%s:%d</cyan> <magenta>|</magenta> <blue>Workers</blue>: <magenta>%d</magenta>",
+		"\U0001F4E1 <green>Local DNS Listener Ready Addr: <cyan>%s:%d</cyan> (Workers: <cyan>%d</cyan>)</green>",
 		c.cfg.LocalDNSIP,
 		c.cfg.LocalDNSPort,
 		c.cfg.LocalDNSWorkers,
@@ -126,7 +126,7 @@ func (c *Client) localDNSWorker(ctx context.Context, conn *net.UDPConn, queue <-
 					}
 					if recovered := recover(); recovered != nil && c != nil && c.log != nil {
 						c.log.Errorf(
-							"💥 <red>Local DNS Handler Panic Recovered</red> <magenta>|</magenta> <yellow>%v</yellow>",
+							"💥 <red>Local DNS Handler Panic: <cyan>%v</cyan></red>",
 							recovered,
 						)
 					}

@@ -422,7 +422,7 @@ func (c *Client) applySessionCompressionPolicy() {
 	if c.syncedUploadMTU > 0 && c.syncedUploadMTU <= minSize {
 		if uploadCompression != compression.TypeOff && c.log != nil {
 			c.log.Infof(
-				"\U0001F5DC <cyan>Session Compression</cyan> <magenta>|</magenta> <blue>Upload</blue>: <yellow>%s</yellow> <red>Disabled</red> <magenta>|</magenta> <blue>MTU</blue>: <cyan>%d</cyan>",
+				"\U0001F5DC <green>Session Compression Upload: <cyan>%s</cyan> (Disabled due to MTU: <cyan>%d</cyan>)</green>",
 				compression.TypeName(uploadCompression),
 				c.syncedUploadMTU,
 			)
@@ -433,7 +433,7 @@ func (c *Client) applySessionCompressionPolicy() {
 	if c.syncedDownloadMTU > 0 && c.syncedDownloadMTU <= minSize {
 		if downloadCompression != compression.TypeOff && c.log != nil {
 			c.log.Infof(
-				"\U0001F5DC <cyan>Session Compression</cyan> <magenta>|</magenta> <blue>Download</blue>: <yellow>%s</yellow> <red>Disabled</red> <magenta>|</magenta> <blue>MTU</blue>: <cyan>%d</cyan>",
+				"\U0001F5DC <green>Session Compression Download: <cyan>%s</cyan> (Disabled due to MTU: <cyan>%d</cyan>)</green>",
 				compression.TypeName(downloadCompression),
 				c.syncedDownloadMTU,
 			)
@@ -446,7 +446,7 @@ func (c *Client) applySessionCompressionPolicy() {
 
 	if c.log != nil {
 		c.log.Infof(
-			"\U0001F9E9 <cyan>Effective Compression</cyan> <magenta>|</magenta> <blue>Upload</blue>: <yellow>%s</yellow> <magenta>|</magenta> <blue>Download</blue>: <yellow>%s</yellow>",
+			"\U0001F9E9 <green>Effective Compression Upload: <cyan>%s</cyan> Download: <cyan>%s</cyan></green>",
 			compression.TypeName(c.uploadCompression),
 			compression.TypeName(c.downloadCompression),
 		)

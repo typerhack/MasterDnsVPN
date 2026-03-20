@@ -121,7 +121,7 @@ func (c *Client) handleServerDropPacket(packet VpnProto.Packet) error {
 
 	if c.log != nil {
 		c.log.Errorf(
-			"🪂 <red>Session Dropped By Server</red> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <yellow>Server Restarted, Invalid Or Closed Session</yellow>",
+			"🪂 <red>Session Dropped By Server: <cyan>%d</cyan> (Restarted, Invalid Or Closed Session)</red>",
 			packet.SessionID,
 		)
 	}

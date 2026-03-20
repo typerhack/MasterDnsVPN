@@ -143,9 +143,9 @@ func (c *Client) runConnectionMTUTest(conn *Connection, serverID int, total int,
 			conn.IsValid = false
 			if c.log != nil {
 				c.log.Errorf(
-					"💥 <red>MTU Probe Worker Panic Recovered</red> <magenta>|</magenta> <blue>Resolver</blue>: <cyan>%s</cyan> <magenta>|</magenta> <yellow>%v</yellow>",
-					conn.ResolverLabel,
+					"💥 <red>MTU Probe Worker Panic: <cyan>%v</cyan> (Resolver: <cyan>%s</cyan>)</red>",
 					recovered,
+					conn.ResolverLabel,
 				)
 			}
 			if counters != nil {
@@ -168,9 +168,9 @@ func (c *Client) runConnectionMTUTest(conn *Connection, serverID int, total int,
 
 	if c.log != nil && c.log.Enabled(logger.LevelDebug) {
 		c.log.Debugf(
-			"<blue>Testing connection <yellow>%s</yellow> via <cyan>%s</cyan> (<yellow>%d / %d</yellow>)...</blue>",
-			conn.Domain,
+			"<green>Testing Resolver: <cyan>%s</cyan> for Domain: <cyan>%s</cyan> (<cyan>%d / %d</cyan>)</green>",
 			conn.ResolverLabel,
+			conn.Domain,
 			serverID,
 			total,
 		)

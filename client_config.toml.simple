@@ -25,13 +25,13 @@ DOMAINS = ["v.domain.com"]
 # - If PROTOCOL_TYPE = "SOCKS5", this acts as a SOCKS5 proxy server.
 # - If PROTOCOL_TYPE = "TCP", this acts as a raw TCP port forwarder.
 LISTEN_IP = "127.0.0.1"
-LISTEN_PORT = 1080
+LISTEN_PORT = 10809
 
 # SOCKS5 Specific Settings:
-LOCAL_SOCKS5_HANDSHAKE_TIMEOUT_SECONDS = 10.0
+LOCAL_SOCKS5_HANDSHAKE_TIMEOUT_SECONDS = 300.0
 SOCKS5_AUTH = false
-SOCKS5_USER = ""
-SOCKS5_PASS = ""
+SOCKS5_USER = "master_dns_vpn"
+SOCKS5_PASS = "master_dns_vpn"
 
 # ------------------------------------------------------------------------------
 # 3) Local DNS Listener & Cache

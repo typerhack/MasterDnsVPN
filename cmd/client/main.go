@@ -62,20 +62,24 @@ func main() {
 	log := app.Logger()
 	if log != nil && log.Enabled(logger.LevelInfo) {
 		log.Infof("\U0001F680 <green>Client Configuration Loaded</green>")
+
 		log.Infof(
 			"\U0001F680 <green>Client Mode, Protocol: <cyan>%s</cyan> Encryption: <cyan>%d</cyan></green>",
 			cfg.ProtocolType,
 			cfg.DataEncryptionMethod,
 		)
+
 		log.Infof(
-			"\U00002696 <green>Resolver Balancing, Strategy: <cyan>%d</cyan></green>",
-			cfg.ResolverBalancingStrategy,
+			"\U00002696  <green>Resolver Balancing, Strategy: <cyan>%s</cyan></green>",
+			formatBalancingStrategy(cfg.ResolverBalancingStrategy),
 		)
+
 		log.Infof(
 			"\U0001F310 <green>Configured Domains: <cyan>%d</cyan> (<cyan>%s</cyan>)</green>",
 			len(cfg.Domains),
 			formatDomains(cfg.Domains),
 		)
+
 		log.Infof(
 			"\U0001F4E1 <green>Loaded Resolvers: <cyan>%d</cyan> endpoints.</green>",
 			len(cfg.Resolvers),
@@ -114,9 +118,10 @@ func main() {
 		}
 
 		log.Infof(
-			"\U0001F5C2 <green>Connection Catalog <cyan>%d</cyan> domain-resolver pairs</green>",
+			"\U0001F5C2  <green>Connection Catalog <cyan>%d</cyan> domain-resolver pairs</green>",
 			len(app.Connections()),
 		)
+
 		log.Infof(
 			"\U00002705 <green>Active Connections</green> <cyan>%d</cyan>",
 			app.Balancer().ValidCount(),
@@ -223,4 +228,21 @@ func formatDomains(s []string) string {
 	}
 	builder.WriteString(", ...")
 	return builder.String()
+}
+
+func formatBalancingStrategy(strategy int) string {
+	switch strategy {
+	case client.BalancingRoundRobinDefault:
+		return "Round-Robin (0)"
+	case client.BalancingRandom:
+		return "Random (1)"
+	case client.BalancingRoundRobin:
+		return "Round-Robin (2)"
+	case client.BalancingLeastLoss:
+		return "Least Loss (3)"
+	case client.BalancingLowestLatency:
+		return "Lowest Latency (4)"
+	default:
+		return fmt.Sprintf("Unknown (%d)", strategy)
+	}
 }

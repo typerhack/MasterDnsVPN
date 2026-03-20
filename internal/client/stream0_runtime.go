@@ -374,7 +374,7 @@ func (r *stream0Runtime) processDequeue(packet arq.QueuedPacket) {
 		r.noteServerDataActivity()
 		if err := r.client.handlePackedServerControlBlocks(response.Payload, time.Second); err != nil && r.client.log != nil {
 			r.client.log.Debugf(
-				"🧵 <yellow>Packed Control Handling Failed</yellow> <magenta>|</magenta> <cyan>%v</cyan>",
+				"🧵 <yellow>Packed Control Handling Failed: <cyan>%v</cyan></yellow>",
 				err,
 			)
 		}
@@ -385,7 +385,7 @@ func (r *stream0Runtime) processDequeue(packet arq.QueuedPacket) {
 		r.noteServerDataActivity()
 		if err := r.client.handleInboundDNSResponseFragment(response); err != nil && r.client.log != nil {
 			r.client.log.Debugf(
-				"\U0001F9E9 <yellow>DNS Response Fragment Handling Failed</yellow> <magenta>|</magenta> <cyan>%v</cyan>",
+				"\U0001F9E9 <yellow>DNS Response Fragment Handling Failed: <cyan>%v</cyan></yellow>",
 				err,
 			)
 		}
@@ -402,7 +402,7 @@ func (r *stream0Runtime) processDequeue(packet arq.QueuedPacket) {
 		r.noteServerDataActivity()
 		if err := r.client.handleFollowUpServerPacket(response, time.Second); err != nil && r.client.log != nil {
 			r.client.log.Debugf(
-				"🧵 <yellow>Stream Runtime Packet Handling Failed</yellow> <magenta>|</magenta> <cyan>%v</cyan>",
+				"🧵 <yellow>Stream Runtime Packet Handling Failed: <cyan>%v</cyan></yellow>",
 				err,
 			)
 		}
@@ -412,7 +412,7 @@ func (r *stream0Runtime) processDequeue(packet arq.QueuedPacket) {
 			r.noteServerDataActivity()
 			if err := r.client.handleAsyncServerPacket(response, time.Second); err != nil && !errors.Is(err, ErrSessionDropped) && r.client.log != nil {
 				r.client.log.Debugf(
-					"🧵 <yellow>Main Queue Packet Handling Failed</yellow> <magenta>|</magenta> <cyan>%v</cyan>",
+					"🧵 <yellow>Main Queue Packet Handling Failed: <cyan>%v</cyan></yellow>",
 					err,
 				)
 			}
