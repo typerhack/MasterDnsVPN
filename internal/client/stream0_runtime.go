@@ -24,11 +24,11 @@ var ErrStream0RuntimeStopped = errors.New("stream 0 runtime stopped")
 var (
 	stream0DNSRetryBaseDelay       = 350 * time.Millisecond
 	stream0DNSRetryMaxDelay        = 2 * time.Second
-	stream0DNSOnlyWarmDuration     = 60 * time.Second
+	stream0DNSOnlyWarmDuration     = 30 * time.Second
 	stream0DNSOnlyWarmPingInterval = time.Second
 	stream0PingIdleHighThreshold   = 10 * time.Second
 	stream0PingIdleMediumThreshold = 5 * time.Second
-	stream0DNSOnlyPingInterval     = 30 * time.Second
+	stream0DNSOnlyPingInterval     = 10 * time.Second
 	stream0PingHighIdleInterval    = 3 * time.Second
 	stream0PingMediumIdleInterval  = time.Second
 	stream0PingBusyInterval        = 200 * time.Millisecond
@@ -318,47 +318,51 @@ func (r *stream0Runtime) nextPingSchedule(now time.Time) (bool, time.Duration) {
 	if r.client != nil {
 		activeStreams = r.client.activeStreamCount()
 	}
-	if activeStreams == 0 {
-		if !hasPendingDNS {
-			return false, time.Second
-		}
-		pingInterval := stream0DNSOnlyPingInterval
-		maxSleep := stream0PingDNSOnlyMaxSleep
-		lastDataActivity := time.Unix(0, r.lastDataActivity.Load())
-		if now.Sub(lastDataActivity) < stream0DNSOnlyWarmDuration {
-			pingInterval = stream0DNSOnlyWarmPingInterval
-			maxSleep = stream0DNSOnlyWarmMaxSleep
-		}
-		lastPingTime := time.Unix(0, r.lastPingTime.Load())
-		timeSinceLastPing := now.Sub(lastPingTime)
-		if timeSinceLastPing >= pingInterval {
-			return true, pingInterval
-		}
-		sleepFor := pingInterval - timeSinceLastPing
-		if sleepFor > maxSleep {
-			sleepFor = maxSleep
-		}
-		return false, sleepFor
-	}
-
-	if !r.dnsActivitySeen.Load() {
-		return false, time.Second
-	}
-
-	lastDataActivity := time.Unix(0, r.lastDataActivity.Load())
-	idleTime := now.Sub(lastDataActivity)
-	pingInterval := stream0PingBusyInterval
-	maxSleep := stream0PingBusyMaxSleep
-	if idleTime >= stream0PingIdleHighThreshold {
-		pingInterval = stream0PingHighIdleInterval
-		maxSleep = stream0PingHighIdleMaxSleep
-	} else if idleTime >= stream0PingIdleMediumThreshold {
-		pingInterval = stream0PingMediumIdleInterval
-		maxSleep = stream0PingMediumIdleMaxSleep
-	}
 
 	lastPingTime := time.Unix(0, r.lastPingTime.Load())
+	lastDataActivity := time.Unix(0, r.lastDataActivity.Load())
 	timeSinceLastPing := now.Sub(lastPingTime)
+	idleTime := now.Sub(lastDataActivity)
+
+	// Default: 30s keep-alive for everything
+	pingInterval := 30 * time.Second
+	maxSleep := time.Second
+
+	// Context-aware interval optimization
+	if activeStreams > 0 {
+		if !r.dnsActivitySeen.Load() {
+			// Session is active but no DNS traffic yet, ping slowly but consistently
+			pingInterval = 10 * time.Second
+		} else if idleTime < stream0PingIdleMediumThreshold {
+			// Very active data flow
+			pingInterval = stream0PingBusyInterval
+			maxSleep = stream0PingBusyMaxSleep
+		} else if idleTime < stream0PingIdleHighThreshold {
+			// Moderate activity
+			pingInterval = stream0PingMediumIdleInterval
+			maxSleep = stream0PingMediumIdleMaxSleep
+		} else {
+			// High idle but still has active streams
+			pingInterval = stream0PingHighIdleInterval
+			maxSleep = stream0PingHighIdleMaxSleep
+		}
+	} else if hasPendingDNS {
+		if idleTime < stream0DNSOnlyWarmDuration {
+			// DNS is active and "warm"
+			pingInterval = stream0DNSOnlyWarmPingInterval
+			maxSleep = stream0DNSOnlyWarmMaxSleep
+		} else {
+			// DNS is active but "cold"
+			pingInterval = stream0DNSOnlyPingInterval
+			maxSleep = stream0PingDNSOnlyMaxSleep
+		}
+	}
+
+	// Safety cap at 30s for ALL conditions (Keep-alive)
+	if pingInterval > 30*time.Second {
+		pingInterval = 30 * time.Second
+	}
+
 	if timeSinceLastPing >= pingInterval {
 		return true, pingInterval
 	}
