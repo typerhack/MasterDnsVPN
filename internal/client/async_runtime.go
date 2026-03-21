@@ -56,9 +56,9 @@ func (c *Client) StopAsyncRuntime() {
 		c.tunnelConn = nil
 	}
 
-	// if c.pingManager != nil {
-	// 	c.pingManager.Stop()
-	// }
+	if c.pingManager != nil {
+		c.pingManager.Stop()
+	}
 }
 
 // StartAsyncRuntime initializes the parallel system for tunnel I/O and processing.
@@ -135,7 +135,7 @@ func (c *Client) StartAsyncRuntime(parentCtx context.Context) error {
 	}()
 
 	// 8. Start Ping Manager (Autonomous adaptive pinging)
-	// c.pingManager.Start(runtimeCtx)
+	c.pingManager.Start(runtimeCtx)
 
 	return nil
 }
@@ -264,7 +264,7 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr) {
 		return
 	}
 
-	// c.pingManager.NotifyPacket(vpnPacket.PacketType, true)
+	c.pingManager.NotifyPacket(vpnPacket.PacketType, true)
 	c.log.Infof("\U0001F4E5 <cyan>Received Validated VPN Packet (Type: %d)</cyan>", vpnPacket.PacketType)
 
 	// // 4. Dispatch to Session/Stream handler
@@ -274,7 +274,8 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr) {
 
 // SendBurstPacket adds a packet to the transmission queue.
 func (c *Client) SendBurstPacket(conn Connection, payload []byte, packetType uint8) {
-	// c.pingManager.NotifyPacket(packetType, false)
+	c.pingManager.NotifyPacket(packetType, false)
+	c.log.Debugf("📤 <yellow>Sending burst packet (Type: %d) to %s:%d</yellow>", packetType, conn.Resolver, conn.ResolverPort)
 	select {
 	case c.txChannel <- asyncPacket{conn: conn, payload: payload, packetType: packetType}:
 	default:

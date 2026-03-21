@@ -251,6 +251,9 @@ func (c *Client) asyncStreamDispatcher(ctx context.Context) {
 			}
 		}
 
+		// Notify Ping Manager of outbound activity
+		c.pingManager.NotifyPacket(finalPacket.packetType, false)
+
 		// Packet Duplication Logic
 		conns := c.selectTargetConnections(finalPacket.packetType, selected.StreamID)
 		if len(conns) == 0 {
@@ -265,6 +268,7 @@ func (c *Client) asyncStreamDispatcher(ctx context.Context) {
 			pkt.conn = conn
 
 			// Send to TX channel
+			c.log.Debugf("📤 <green>Dispatching packet (Type: %d) to %s:%d</green>", pkt.packetType, conn.Resolver, conn.ResolverPort)
 			select {
 			case c.txChannel <- pkt:
 			default:

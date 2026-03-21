@@ -102,6 +102,16 @@ type Client struct {
 
 	// Signal to wake up dispatcher
 	txSignal chan struct{}
+
+	// Autonomous Ping Manager
+	pingManager *PingManager
+}
+
+func (c *Client) SessionReady() bool {
+	if c == nil {
+		return false
+	}
+	return c.sessionReady
 }
 
 // clientStreamTXPacket represents a queued packet pending transmission or retransmission.
@@ -166,7 +176,7 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 		responseMode = mtuProbeBase64Reply
 	}
 
-	return &Client{
+	c := &Client{
 		cfg:                 cfg,
 		log:                 log,
 		codec:               codec,
@@ -202,6 +212,8 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 		active_streams:       make(map[uint16]*Stream_client),
 		txSignal:             make(chan struct{}, 1),
 	}
+	c.pingManager = newPingManager(c)
+	return c
 }
 
 func (c *Client) Config() config.ClientConfig {

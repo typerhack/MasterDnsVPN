@@ -267,6 +267,7 @@ func (c *Client) InitVirtualStream0() {
 
 	streamID := uint16(0)
 	s := &Stream_client{
+		client:     c,
 		StreamID:   streamID,
 		txQueue:    mlq.New[*clientStreamTXPacket](64),
 		CreateTime: time.Now(),
