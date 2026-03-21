@@ -130,6 +130,7 @@ type Client struct {
 
 	asyncCancel context.CancelFunc
 	asyncWG     sync.WaitGroup
+	tunnelConn  *net.UDPConn
 }
 
 type asyncReadPacket struct {

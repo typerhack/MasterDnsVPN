@@ -22,8 +22,16 @@ func (c *Client) StopAsyncRuntime() {
 
 		// Final drain to return all buffers to the pool and prevent memory leaks.
 		c.drainQueues()
-		c.pingManager.Stop()
 		c.log.Debugf("\U0001F232 <green>Async Runtime stopped cleanly.</green>")
+	}
+
+	if c.tunnelConn != nil {
+		_ = c.tunnelConn.Close()
+		c.tunnelConn = nil
+	}
+
+	if c.pingManager != nil {
+		c.pingManager.Stop()
 	}
 }
 
@@ -43,6 +51,7 @@ func (c *Client) StartAsyncRuntime(parentCtx context.Context) error {
 		c.asyncCancel = nil
 		return fmt.Errorf("failed to open high-performance tunnel socket: %w", err)
 	}
+	c.tunnelConn = conn
 
 	c.log.Infof("\U0001F4E1 <cyan>Async Runtime Initialized: <green>%d Writes</green>, <green>%d Reads</green>, <green>%d Processors</green></cyan>",
 		c.tunnelWriterWorkers, c.tunnelReaderWorkers, c.tunnelProcessWorkers)
@@ -107,7 +116,7 @@ drainRX:
 // asyncWriterWorker fires packets from txChannel at the destination.
 func (c *Client) asyncWriterWorker(ctx context.Context, id int, conn *net.UDPConn) {
 	defer c.asyncWG.Done()
-	c.log.Debugf("\U0001F680 Writer Worker #%d started", id)
+	c.log.Debugf("\U0001F680 <green>Writer Worker <cyan>#%d</cyan> started</green>", id)
 	for {
 		select {
 		case <-ctx.Done():
@@ -130,7 +139,7 @@ func (c *Client) asyncWriterWorker(ctx context.Context, id int, conn *net.UDPCon
 // asyncReaderWorker reads raw UDP data and pushes to the rxChannel (Internal Queue).
 func (c *Client) asyncReaderWorker(ctx context.Context, id int, conn *net.UDPConn) {
 	defer c.asyncWG.Done()
-	c.log.Debugf("\U0001F442 Reader Worker #%d started", id)
+	c.log.Debugf("\U0001F442 <green>Reader Worker <cyan>#%d</cyan> started</green>", id)
 	for {
 		select {
 		case <-ctx.Done():
@@ -174,7 +183,7 @@ func (c *Client) asyncReaderWorker(ctx context.Context, id int, conn *net.UDPCon
 // asyncProcessorWorker pulls from rxChannel and performs the actual packet handling.
 func (c *Client) asyncProcessorWorker(ctx context.Context, id int) {
 	defer c.asyncWG.Done()
-	c.log.Debugf("\U0001F3D7 Processor Worker #%d started", id)
+	c.log.Debugf("\U0001F3D7  <green>Processor Worker <cyan>#%d</cyan> started</green>", id)
 	for {
 		select {
 		case <-ctx.Done():

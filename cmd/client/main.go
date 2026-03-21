@@ -157,6 +157,8 @@ func main() {
 			exitWithStderrf("Connection manager failed: %v\n", err)
 		}
 
+		_ = app.StartAsyncRuntime(runCtx)
+
 		select {
 		case <-readyCh:
 			if !bootstrapReadyLogged && log != nil {
