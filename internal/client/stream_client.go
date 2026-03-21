@@ -230,3 +230,89 @@ func (s *Stream_client) ReleaseTXPacket(p *clientStreamTXPacket) {
 	p.Payload = nil // Clear payload reference
 	txPacketPool.Put(p)
 }
+
+// -----------------------------------------------------------------------------------------
+// Virtual Stream 0 Support
+// -----------------------------------------------------------------------------------------
+
+type fakeConn struct{}
+
+func (f *fakeConn) Read(b []byte) (n int, err error) {
+	// Block eternally so ARQ's ioLoop doesn't spin or immediately exit
+	select {}
+}
+
+func (f *fakeConn) Write(b []byte) (n int, err error) {
+	// Swallow data silently for Stream 0 local-writes
+	return len(b), nil
+}
+
+func (f *fakeConn) Close() error {
+	return nil
+}
+
+// InitVirtualStream0 initializes Stream #0 instantly upon Session start.
+// This serves as the control and Ping channel running perpetually without timeout.
+func (c *Client) InitVirtualStream0() {
+	c.streamsMu.Lock()
+	defer c.streamsMu.Unlock()
+
+	streamID := uint16(0)
+	s := &Stream_client{
+		StreamID:   streamID,
+		txQueue:    mlq.New[*clientStreamTXPacket](64),
+		CreateTime: time.Now(),
+	}
+
+	mtu := c.syncedUploadMTU
+	if mtu <= 0 {
+		mtu = 1200
+	}
+
+	arqCfg := arq.Config{
+		WindowSize:               c.cfg.ARQWindowSize,
+		RTO:                      0.2, // Fast retry out of the gate
+		MaxRTO:                   1.5,
+		IsSocks:                  false,
+		IsVirtual:                true, // Bypasses internal timeout closures
+		EnableControlReliability: true,
+		ControlRTO:               0.8,
+		ControlMaxRTO:            2.5,
+		ControlMaxRetries:        40,
+		InactivityTimeout:        999999.0, // Infinite
+		DataPacketTTL:            999999.0,
+		MaxDataRetries:           99999,
+		ControlPacketTTL:         999999.0,
+		FinDrainTimeout:          300.0,
+		GracefulDrainTimeout:     600.0,
+	}
+
+	conn := &fakeConn{}
+	a := arq.NewARQ(streamID, c.sessionID, s, conn, mtu, c.log, arqCfg)
+	s.Stream = a
+	c.active_streams[streamID] = s
+	a.Start()
+
+	c.log.Infof("🚀 <green>Virtual Stream 0 (Control Channel) Initialized.</green>")
+}
+
+// CloseAllStreams completely flushes all ARQ bindings. For Stream 0, it calls ForceClose.
+func (c *Client) CloseAllStreams() {
+	c.streamsMu.Lock()
+	streams := make([]*Stream_client, 0, len(c.active_streams))
+	for _, s := range c.active_streams {
+		streams = append(streams, s)
+	}
+	c.active_streams = make(map[uint16]*Stream_client)
+	c.streamsMu.Unlock()
+
+	for _, s := range streams {
+		if a, ok := s.Stream.(*arq.ARQ); ok {
+			if s.StreamID == 0 {
+				a.ForceClose("Session Reset (Virtual Stream 0 Force Destroy)")
+			} else {
+				a.Close("Session Reset (All Streams Destroy)", false)
+			}
+		}
+	}
+}

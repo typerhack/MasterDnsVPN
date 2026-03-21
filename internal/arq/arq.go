@@ -169,6 +169,7 @@ type ARQ struct {
 
 	// SOCKS pre-connection payload handling
 	isSocks        bool
+	isVirtual      bool
 	initialData    []byte
 	socksConnected chan struct{}
 
@@ -184,6 +185,7 @@ type Config struct {
 	RTO                      float64
 	MaxRTO                   float64
 	IsSocks                  bool
+	IsVirtual                bool
 	InitialData              []byte
 	EnableControlReliability bool
 	ControlRTO               float64
@@ -208,10 +210,7 @@ func NewARQ(streamID uint16, sessionID uint8, enqueuer PacketEnqueuer, localConn
 		windowSize = 1
 	}
 
-	limit := int(float64(windowSize) * 0.8)
-	if limit < 50 {
-		limit = 50
-	}
+	limit := max(int(float64(windowSize)*0.8), 50)
 
 	a := &ARQ{
 		streamID:  streamID,
@@ -244,6 +243,7 @@ func NewARQ(streamID uint16, sessionID uint8, enqueuer PacketEnqueuer, localConn
 		controlPacketTTL:         time.Duration(maxF(120.0, cfg.ControlPacketTTL) * float64(time.Second)),
 
 		isSocks:        cfg.IsSocks,
+		isVirtual:      cfg.IsVirtual,
 		initialData:    cfg.InitialData,
 		socksConnected: make(chan struct{}),
 	}
@@ -378,6 +378,10 @@ func (a *ARQ) MarkFinSent(seqSN *uint16) {
 
 func (a *ARQ) MarkFinReceived(sn uint16) {
 	a.mu.Lock()
+	if a.isVirtual {
+		a.mu.Unlock()
+		return
+	}
 	a.finReceived = true
 	a.finSeqReceived = &sn
 	a.stopLocalRead = true
@@ -417,6 +421,10 @@ func (a *ARQ) MarkRstSent(seqSN *uint16) {
 
 func (a *ARQ) MarkRstReceived(sn uint16) {
 	a.mu.Lock()
+	if a.isVirtual {
+		a.mu.Unlock()
+		return
+	}
 	a.rstReceived = true
 	a.rstSeqReceived = &sn
 	a.setState(StateReset)
@@ -1014,7 +1022,7 @@ func (a *ARQ) checkControlRetransmits(now time.Time) {
 // Abort performs aggressive RST TCP closure and instantly zeroes out local buffers
 func (a *ARQ) Abort(reason string, sendRst bool) {
 	a.mu.Lock()
-	if a.closed {
+	if a.closed || a.isVirtual {
 		a.mu.Unlock()
 		return
 	}
@@ -1039,7 +1047,7 @@ func (a *ARQ) Abort(reason string, sendRst bool) {
 
 func (a *ARQ) Close(reason string, sendFin bool) {
 	a.mu.Lock()
-	if a.closed {
+	if a.closed || a.isVirtual {
 		a.mu.Unlock()
 		return
 	}
@@ -1071,4 +1079,19 @@ func (a *ARQ) Close(reason string, sendFin bool) {
 
 	a.clearAllQueues()
 	a.mu.Unlock()
+}
+
+// ForceClose permanently closes the ARQ stream regardless of IsVirtual.
+func (a *ARQ) ForceClose(reason string) {
+	a.mu.Lock()
+	wasVirtual := a.isVirtual
+	a.isVirtual = false
+	a.mu.Unlock()
+
+	if wasVirtual {
+		// Override and instantly kill
+		a.Abort(reason, false)
+	} else {
+		a.Close(reason, false)
+	}
 }

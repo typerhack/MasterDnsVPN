@@ -196,6 +196,7 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 		tunnelPacketTimeout:  time.Second * 5,
 		txChannel:            make(chan asyncPacket, 1024),
 		rxChannel:            make(chan asyncReadPacket, 1024),
+		active_streams:       make(map[uint16]*Stream_client),
 	}
 }
 
@@ -339,6 +340,9 @@ func (c *Client) Run(ctx context.Context) error {
 					continue
 				}
 				c.log.Infof("<green>✅ Session Initialized Successfully (ID: <cyan>%d</cyan>)</green>", c.sessionID)
+
+				// Create the infinite Virtual Stream 0
+				c.InitVirtualStream0()
 
 				// Start the asynchronous workers processing the raw pipeline
 				if err := c.StartAsyncRuntime(ctx); err != nil {
