@@ -51,19 +51,21 @@ func NewStreamServer(streamID uint16, sessionID uint8, arqConfig arq.Config, loc
 
 // PushTXPacket implements arq.PacketEnqueuer.
 // It adds a packet to the stream's multi-level queue.
-func (s *Stream_server) PushTXPacket(priority int, packetType uint8, sequenceNum uint16, payload []byte) bool {
+func (s *Stream_server) PushTXPacket(priority int, packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte) bool {
 	s.mu.Lock()
 	s.LastActivity = time.Now()
 	s.mu.Unlock()
 
 	// Dedup and track logic would go here if needed.
 	// For now, we use the MLQ's census for basic deduplication if we define a unique key.
-	// Key: packetType << 16 | sequenceNum
-	key := getTrackingKey(packetType, sequenceNum)
+	// Key: [Type(8)][Seq(16)][FragID(8)]
+	key := getTrackingKey(packetType, sequenceNum, fragmentID)
 
 	pkt := getTXPacketFromPool()
 	pkt.PacketType = packetType
 	pkt.SequenceNum = sequenceNum
+	pkt.FragmentID = fragmentID
+	pkt.TotalFragments = totalFragments
 	pkt.Payload = payload
 	pkt.CreatedAt = time.Now()
 

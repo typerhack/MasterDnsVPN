@@ -35,6 +35,10 @@ type ClientContext interface {
 	// MTU Management
 	HandleMTUResponse(packet VpnProto.Packet) error
 
+	// DNS Management
+	HandleDNSQueryAck(packet VpnProto.Packet) error
+	HandleDNSQueryRes(packet VpnProto.Packet) error
+
 	// Error Management
 	HandleServerDrop(packet VpnProto.Packet) error
 }

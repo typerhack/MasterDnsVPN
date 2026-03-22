@@ -70,9 +70,11 @@ type sessionRecord struct {
 
 // serverStreamTXPacket represents a queued packet pending transmission or retransmission.
 type serverStreamTXPacket struct {
-	PacketType  uint8
-	SequenceNum uint16
-	Payload     []byte
+	PacketType     uint8
+	SequenceNum    uint16
+	FragmentID     uint8
+	TotalFragments uint8
+	Payload        []byte
 	CreatedAt   time.Time
 }
 
@@ -94,8 +96,8 @@ func putTXPacketToPool(p *serverStreamTXPacket) {
 	txPacketPool.Put(p)
 }
 
-func getTrackingKey(packetType uint8, sequenceNum uint16) uint32 {
-	return uint32(packetType)<<16 | uint32(sequenceNum)
+func getTrackingKey(packetType uint8, sequenceNum uint16, fragmentID uint8) uint32 {
+	return uint32(packetType)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
 }
 
 // getEffectivePriority maps packet types to priorities (0 is highest, 5 is lowest).

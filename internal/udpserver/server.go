@@ -713,13 +713,14 @@ func (s *Server) queueSessionPacket(sessionID uint8, packet VpnProto.Packet) boo
 		txPkt := getTXPacketFromPool()
 		txPkt.PacketType = packet.PacketType
 		txPkt.SequenceNum = packet.SequenceNum
+		txPkt.FragmentID = packet.FragmentID
 		txPkt.Payload = packet.Payload
 		txPkt.CreatedAt = time.Now()
-		return record.MainQueue.Push(getEffectivePriority(packet.PacketType, 3), getTrackingKey(packet.PacketType, packet.SequenceNum), txPkt)
+		return record.MainQueue.Push(getEffectivePriority(packet.PacketType, 3), getTrackingKey(packet.PacketType, packet.SequenceNum, packet.FragmentID), txPkt)
 	} else {
 		// Use default ARQ config for now, will be updated by handleStreamSyn
 		stream := record.getOrCreateStream(packet.StreamID, arq.Config{}, nil, s.log)
-		return stream.PushTXPacket(getEffectivePriority(packet.PacketType, 3), packet.PacketType, packet.SequenceNum, packet.Payload)
+		return stream.PushTXPacket(getEffectivePriority(packet.PacketType, 3), packet.PacketType, packet.SequenceNum, 0, 0, packet.Payload)
 	}
 }
 
@@ -848,7 +849,7 @@ func (s *Server) packControlBlocks(record *sessionRecord, first VpnProto.Packet)
 }
 
 func txPacketKeyExtractor(p *serverStreamTXPacket) uint32 {
-	return getTrackingKey(p.PacketType, p.SequenceNum)
+	return getTrackingKey(p.PacketType, p.SequenceNum, p.FragmentID)
 }
 
 func vpnPacketFromTX(p *serverStreamTXPacket) VpnProto.Packet {
@@ -1877,7 +1878,7 @@ func (s *Server) handleStreamAckPacket(vpnPacket VpnProto.Packet, sessionRecord 
 	case Enums.PACKET_STREAM_RST_ACK:
 		_ = s.streams.MarkReset(vpnPacket.SessionID, vpnPacket.StreamID, vpnPacket.SequenceNum, now)
 		if ok {
-			stream.ARQ.ReceiveControlAck(vpnPacket.PacketType, vpnPacket.SequenceNum)
+			stream.ARQ.ReceiveControlAck(vpnPacket.PacketType, vpnPacket.SequenceNum, vpnPacket.FragmentID)
 		}
 		s.removeStreamDataFragmentsForStream(vpnPacket.SessionID, vpnPacket.StreamID)
 	case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_SYN_ACK:
@@ -1886,7 +1887,7 @@ func (s *Server) handleStreamAckPacket(vpnPacket VpnProto.Packet, sessionRecord 
 			if vpnPacket.PacketType == Enums.PACKET_STREAM_DATA_ACK {
 				stream.ARQ.ReceiveAck(vpnPacket.SequenceNum)
 			} else {
-				stream.ARQ.ReceiveControlAck(vpnPacket.PacketType, vpnPacket.SequenceNum)
+				stream.ARQ.ReceiveControlAck(vpnPacket.PacketType, vpnPacket.SequenceNum, vpnPacket.FragmentID)
 			}
 		}
 		if vpnPacket.PacketType == Enums.PACKET_STREAM_FIN_ACK {

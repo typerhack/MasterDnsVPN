@@ -25,3 +25,19 @@ func randomBytes(length int) ([]byte, error) {
 	}
 	return buf, nil
 }
+
+// fragmentPayload splits a payload into chunks of max mtu size.
+func fragmentPayload(payload []byte, mtu int) [][]byte {
+	if len(payload) <= mtu {
+		return [][]byte{payload}
+	}
+	var fragments [][]byte
+	for i := 0; i < len(payload); i += mtu {
+		end := i + mtu
+		if end > len(payload) {
+			end = len(payload)
+		}
+		fragments = append(fragments, payload[i:end])
+	}
+	return fragments
+}

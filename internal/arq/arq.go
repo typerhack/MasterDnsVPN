@@ -34,7 +34,7 @@ const (
 
 // PacketEnqueuer abstracts the transmission layer (Client or Server stream)
 type PacketEnqueuer interface {
-	PushTXPacket(priority int, packetType uint8, sequenceNum uint16, payload []byte) bool
+	PushTXPacket(priority int, packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte) bool
 }
 
 type Logger interface {
@@ -475,7 +475,7 @@ func (a *ARQ) ioLoop() {
 				CurrentRTO: a.rto,
 			}
 			a.mu.Unlock()
-			a.enqueuer.PushTXPacket(3, Enums.PACKET_STREAM_DATA, sn, chunk)
+			a.enqueuer.PushTXPacket(3, Enums.PACKET_STREAM_DATA, sn, 0, 0, chunk)
 			offset += a.mtu
 		}
 	}
@@ -549,7 +549,7 @@ func (a *ARQ) ioLoop() {
 		}
 		a.mu.Unlock()
 
-		a.enqueuer.PushTXPacket(3, Enums.PACKET_STREAM_DATA, sn, raw)
+		a.enqueuer.PushTXPacket(3, Enums.PACKET_STREAM_DATA, sn, 0, 0, raw)
 	}
 
 	// Closure Handling Strategy
@@ -657,7 +657,7 @@ func (a *ARQ) tryFinalizeRemoteEOF() {
 	// In Go, closing for write only is trickier, but if it supports CloseWrite, we can.
 	// We'll skip TCP half-close syscalls since net.Conn lacks it inherently without strict types, but it's safe to just ack.
 
-	go a.SendControlPacket(Enums.PACKET_STREAM_FIN_ACK, *a.finSeqReceived, nil, 0, false, nil)
+	go a.SendControlPacket(Enums.PACKET_STREAM_FIN_ACK, *a.finSeqReceived, 0, 0, nil, 0, false, nil)
 
 	if a.finSent && a.finAcked && len(a.sndBuf) == 0 {
 		go a.Close("Both FIN sides fully acknowledged", false)
@@ -776,7 +776,7 @@ func (a *ARQ) ReceiveData(sn uint16, data []byte) {
 		a.mu.Unlock()
 
 		if emit {
-			a.enqueuer.PushTXPacket(0, Enums.PACKET_STREAM_DATA_ACK, sn, nil)
+			a.enqueuer.PushTXPacket(0, Enums.PACKET_STREAM_DATA_ACK, sn, 0, 0, nil)
 		}
 		return
 	}
@@ -798,7 +798,7 @@ func (a *ARQ) ReceiveData(sn uint16, data []byte) {
 	a.mu.Unlock()
 
 	a.flushReadyLocalData()
-	a.enqueuer.PushTXPacket(0, Enums.PACKET_STREAM_DATA_ACK, sn, nil)
+	a.enqueuer.PushTXPacket(0, Enums.PACKET_STREAM_DATA_ACK, sn, 0, 0, nil)
 	a.tryFinalizeRemoteEOF()
 }
 
@@ -820,9 +820,9 @@ func (a *ARQ) ReceiveAck(sn uint16) {
 // Control Plane Verification
 // ---------------------------------------------------------------------
 
-func (a *ARQ) SendControlPacket(packetType uint8, sequenceNum uint16, payload []byte, priority int, trackForAck bool, customAckType *uint8) bool {
+func (a *ARQ) SendControlPacket(packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte, priority int, trackForAck bool, customAckType *uint8) bool {
 	copyData := append([]byte(nil), payload...)
-	ok := a.enqueuer.PushTXPacket(priority, packetType, sequenceNum, copyData)
+	ok := a.enqueuer.PushTXPacket(priority, packetType, sequenceNum, fragmentID, totalFragments, copyData)
 	if !ok {
 		return false
 	}
@@ -842,7 +842,8 @@ func (a *ARQ) SendControlPacket(packetType uint8, sequenceNum uint16, payload []
 		expectedAck = val
 	}
 
-	key := uint32(packetType)<<16 | uint32(sequenceNum)
+	// Key: [8bit PacketType][16bit SequenceNum][8bit FragmentID]
+	key := uint32(packetType)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
 	now := time.Now()
 
 	a.mu.Lock()
@@ -873,7 +874,7 @@ func (a *ARQ) SendControlPacket(packetType uint8, sequenceNum uint16, payload []
 	return true
 }
 
-func (a *ARQ) ReceiveControlAck(ackPacketType uint8, sequenceNum uint16) bool {
+func (a *ARQ) ReceiveControlAck(ackPacketType uint8, sequenceNum uint16, fragmentID uint8) bool {
 	a.mu.Lock()
 	a.lastActivity = time.Now()
 
@@ -889,15 +890,18 @@ func (a *ARQ) ReceiveControlAck(ackPacketType uint8, sequenceNum uint16) bool {
 
 	originPtype, ok := reverseControlAckPairs[ackPacketType]
 	var cleared bool
+	// Note: Local DNS fragments from server are handled by fragmentstore,
+	// but control-plane fragments (like split DNS REQs) need matching keys.
+
 	if !ok {
-		key := uint32(ackPacketType)<<16 | uint32(sequenceNum)
+		key := uint32(ackPacketType)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
 		_, exists := a.controlSndBuf[key]
 		if exists {
 			delete(a.controlSndBuf, key)
 			cleared = true
 		}
 	} else {
-		key := uint32(originPtype)<<16 | uint32(sequenceNum)
+		key := uint32(originPtype)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
 		_, exists := a.controlSndBuf[key]
 		if exists {
 			delete(a.controlSndBuf, key)
@@ -961,7 +965,7 @@ func (a *ARQ) checkRetransmits() {
 	a.mu.Unlock()
 
 	for _, j := range jobs {
-		a.enqueuer.PushTXPacket(1, Enums.PACKET_STREAM_RESEND, j.sn, j.data)
+		a.enqueuer.PushTXPacket(1, Enums.PACKET_STREAM_RESEND, j.sn, 0, 0, j.data)
 	}
 
 	if a.enableControlReliability {
@@ -995,7 +999,7 @@ func (a *ARQ) checkControlRetransmits(now time.Time) {
 			continue
 		}
 
-		ok := a.enqueuer.PushTXPacket(info.Priority, info.PacketType, uint16(key&0xFFFF), info.Payload)
+		ok := a.enqueuer.PushTXPacket(info.Priority, info.PacketType, uint16(key&0xFFFF), 0, 0, info.Payload)
 		if !ok {
 			delete(a.controlSndBuf, key)
 			continue
@@ -1036,7 +1040,7 @@ func (a *ARQ) Abort(reason string, sendRst bool) {
 		a.mu.Unlock()
 		a.MarkRstSent(&sn)
 		ackType := uint8(Enums.PACKET_STREAM_RST_ACK)
-		a.SendControlPacket(Enums.PACKET_STREAM_RST, *a.rstSeqSent, nil, 0, a.enableControlReliability, &ackType)
+		a.SendControlPacket(Enums.PACKET_STREAM_RST, *a.rstSeqSent, 0, 0, nil, 0, a.enableControlReliability, &ackType)
 	}
 
 	a.mu.Lock()
@@ -1059,7 +1063,7 @@ func (a *ARQ) Close(reason string, sendFin bool) {
 		a.mu.Unlock()
 		a.MarkFinSent(&sn)
 		ackType := uint8(Enums.PACKET_STREAM_FIN_ACK)
-		a.SendControlPacket(Enums.PACKET_STREAM_FIN, *a.finSeqSent, nil, 4, a.enableControlReliability, &ackType)
+		a.SendControlPacket(Enums.PACKET_STREAM_FIN, *a.finSeqSent, 0, 0, nil, 4, a.enableControlReliability, &ackType)
 		a.mu.Lock()
 	}
 

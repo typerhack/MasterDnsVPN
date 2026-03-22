@@ -281,6 +281,8 @@ func (c *Client) asyncStreamDispatcher(ctx context.Context) {
 			if !wasPacked {
 				opts.StreamID = selected.StreamID
 				opts.SequenceNum = item.SequenceNum
+				opts.FragmentID = item.FragmentID
+				opts.TotalFragments = item.TotalFragments
 				opts.Payload = item.Payload
 			} else {
 				opts.Payload = finalPacket.payload

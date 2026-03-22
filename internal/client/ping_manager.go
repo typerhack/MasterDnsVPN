@@ -28,11 +28,11 @@ const (
 )
 
 type PingManager struct {
-	client                 *Client
-	lastPingSentAt         atomic.Int64
-	lastPongReceivedAt     atomic.Int64
-	lastNonPingSentAt      atomic.Int64
-	lastNonPongReceivedAt  atomic.Int64
+	client                *Client
+	lastPingSentAt        atomic.Int64
+	lastPongReceivedAt    atomic.Int64
+	lastNonPingSentAt     atomic.Int64
+	lastNonPongReceivedAt atomic.Int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -147,7 +147,7 @@ func (p *PingManager) pingLoop() {
 		now := time.Now()
 		interval := p.nextInterval(now)
 		lastPing := time.Unix(0, p.lastPingSentAt.Load())
-		
+
 		if now.Sub(lastPing) >= interval {
 			if p.client.SessionReady() {
 				payload, err := buildClientPingPayload()
@@ -159,7 +159,7 @@ func (p *PingManager) pingLoop() {
 
 					if s0 != nil {
 						// Priority 0 (highest) for ping
-						s0.PushTXPacket(0, Enums.PACKET_PING, 0, payload)
+						s0.PushTXPacket(0, Enums.PACKET_PING, 0, 0, 0, payload)
 					}
 				}
 			}

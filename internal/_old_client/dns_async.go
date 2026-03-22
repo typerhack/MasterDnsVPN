@@ -30,28 +30,29 @@ func (c *Client) localDNSFragmentTimeout() time.Duration {
 }
 
 func (c *Client) hasPendingDNSWork() bool {
-	if c == nil {
+	if c == nil || c.stream0Runtime == nil {
 		return false
 	}
-	s, ok := c.getStream(0)
-	if !ok {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.TXQueue) > 0
+	return c.stream0Runtime.hasPendingDNSRequests()
 }
 
 func (c *Client) queueDNSDispatch(request *dnsDispatchRequest) {
-	if c == nil || request == nil || len(request.Query) == 0 {
+	if c == nil || request == nil || len(request.Query) == 0 || c.stream0Runtime == nil {
 		return
 	}
 
-	if !c.SessionReady() {
+	if !c.SessionReady() || !c.stream0Runtime.IsRunning() {
 		return
 	}
 
-	c.QueueControlPacket(Enums.PACKET_DNS_QUERY_REQ, request.Query)
+	if err := c.stream0Runtime.QueueDNSRequest(request.Query); err != nil && c.log != nil {
+		c.log.Debugf(
+			"\U0001F9E9 <yellow>Local DNS Queue Failed: <cyan>%s</cyan> (Type: <cyan>%s</cyan>) | Error: <cyan>%v</cyan></yellow>",
+			request.Domain,
+			Enums.DNSRecordTypeName(request.QType),
+			err,
+		)
+	}
 }
 
 func (c *Client) handleInboundDNSResponseFragment(packet VpnProto.Packet) error {
@@ -59,16 +60,20 @@ func (c *Client) handleInboundDNSResponseFragment(packet VpnProto.Packet) error 
 		return nil
 	}
 
-	if c.log != nil {
-		c.log.Debugf(
-			"\U0001F9E9 <blue>Resolved Tunnel DNS Request, Seq: <cyan>%d</cyan> | Fragment: <cyan>%d/%d</cyan></blue>",
-			packet.SequenceNum,
-			packet.FragmentID+1,
-			max(1, int(packet.TotalFragments)),
-		)
+	if c.stream0Runtime != nil {
+		if c.stream0Runtime.completeDNSRequest(packet.SequenceNum) && c.log != nil {
+			c.log.Debugf(
+				"\U0001F9E9 <blue>Resolved Tunnel DNS Request, Seq: <cyan>%d</cyan> | Fragment: <cyan>%d/%d</cyan></blue>",
+				packet.SequenceNum,
+				packet.FragmentID+1,
+				max(1, int(packet.TotalFragments)),
+			)
+		}
 	}
 
-	_ = c.sendStreamProtocolOneWay(Enums.PACKET_DNS_QUERY_RES_ACK, 0, packet.SequenceNum, nil, time.Second)
+	if c.stream0Runtime != nil {
+		c.stream0Runtime.QueueMainPacket(arqQueuedDNSAck(packet))
+	}
 
 	now := c.now()
 	assembled, ready, completed := c.dnsResponses.Collect(

@@ -19,9 +19,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"masterdnsvpn-go/internal/arq"
 	"masterdnsvpn-go/internal/compression"
 	"masterdnsvpn-go/internal/config"
+	dnsCache "masterdnsvpn-go/internal/dnscache"
+	dnsParser "masterdnsvpn-go/internal/dnsparser"
 	Enums "masterdnsvpn-go/internal/enums"
+	fragmentStore "masterdnsvpn-go/internal/fragmentstore"
 	"masterdnsvpn-go/internal/logger"
 	"masterdnsvpn-go/internal/security"
 	VpnProto "masterdnsvpn-go/internal/vpnproto"
@@ -105,6 +109,16 @@ type Client struct {
 
 	// Autonomous Ping Manager
 	pingManager *PingManager
+
+	// DNS Management
+	localDNSCache *dnsCache.Store
+	dnsResponses  *fragmentStore.Store[dnsFragmentKey]
+	dnsWaiters    sync.Map // SequenceNum -> *net.UDPAddr
+}
+
+type dnsFragmentKey struct {
+	SessionID   uint8
+	SequenceNum uint16
 }
 
 func (c *Client) SessionReady() bool {
@@ -136,15 +150,17 @@ func (c *Client) NotifyPacket(packetType uint8, isInbound bool) {
 
 // clientStreamTXPacket represents a queued packet pending transmission or retransmission.
 type clientStreamTXPacket struct {
-	PacketType  uint8
-	SequenceNum uint16
-	Payload     []byte
-	CreatedAt   time.Time
-	LastSentAt  time.Time
-	RetryDelay  time.Duration
-	RetryAt     time.Time
-	RetryCount  int
-	Scheduled   bool
+	PacketType     uint8
+	SequenceNum    uint16
+	FragmentID     uint8
+	TotalFragments uint8
+	Payload        []byte
+	CreatedAt      time.Time
+	LastSentAt     time.Time
+	RetryDelay     time.Duration
+	RetryAt        time.Time
+	RetryCount     int
+	Scheduled      bool
 }
 
 // Connection represents a unique domain-resolver pair with its associated metadata and MTU states.
@@ -231,6 +247,14 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 		rxChannel:            make(chan asyncReadPacket, 1024),
 		active_streams:       make(map[uint16]*Stream_client),
 		txSignal:             make(chan struct{}, 1),
+
+		// DNS Management
+		localDNSCache: dnsCache.New(
+			cfg.LocalDNSCacheMaxRecords,
+			time.Duration(cfg.LocalDNSCacheTTLSeconds)*time.Second,
+			time.Duration(cfg.LocalDNSPendingTimeoutSec)*time.Second,
+		),
+		dnsResponses: fragmentStore.New[dnsFragmentKey](128),
 	}
 	c.pingManager = newPingManager(c)
 	return c
@@ -610,4 +634,49 @@ func (c *Client) HandleMTUResponse(packet VpnProto.Packet) error {
 func (c *Client) HandleServerDrop(packet VpnProto.Packet) error {
 	// TODO: Move implementation here
 	return nil
+}
+
+func (c *Client) HandleDNSQueryAck(packet VpnProto.Packet) error {
+	c.streamsMu.RLock()
+	s0, ok := c.active_streams[0]
+	c.streamsMu.RUnlock()
+
+	if ok && s0 != nil {
+		if arqObj, ok := s0.Stream.(*arq.ARQ); ok {
+			arqObj.ReceiveControlAck(packet.PacketType, packet.SequenceNum, packet.FragmentID)
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleDNSQueryRes(packet VpnProto.Packet) error {
+	key := dnsFragmentKey{
+		SessionID:   c.sessionID,
+		SequenceNum: packet.SequenceNum,
+	}
+
+	assembled, ready, _ := c.dnsResponses.Collect(key, packet.Payload, packet.FragmentID, packet.TotalFragments, time.Now(), 10*time.Second)
+	if !ready {
+		return nil
+	}
+
+	if c.localDNSCache != nil {
+		lite, err := dnsParser.ParsePacketLite(assembled)
+		if err == nil && lite.HasQuestion {
+			cacheKey := dnsCache.BuildKey(lite.FirstQuestion.Name, lite.FirstQuestion.Type, lite.FirstQuestion.Class)
+			c.localDNSCache.SetReady(cacheKey, lite.FirstQuestion.Name, lite.FirstQuestion.Type, lite.FirstQuestion.Class, assembled, time.Now())
+		}
+	}
+
+	if addr, ok := c.dnsWaiters.LoadAndDelete(packet.SequenceNum); ok {
+		c.sendDNSResponse(assembled, addr.(*net.UDPAddr))
+	}
+
+	return nil
+}
+
+func (c *Client) sendDNSResponse(resp []byte, addr *net.UDPAddr) {
+	if c.dnsListener != nil && c.dnsListener.conn != nil {
+		_, _ = c.dnsListener.conn.WriteToUDP(resp, addr)
+	}
 }

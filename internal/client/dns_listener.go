@@ -10,6 +10,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
+
+	"masterdnsvpn-go/internal/dnscache"
+	"masterdnsvpn-go/internal/dnsparser"
 )
 
 type DNSListener struct {
@@ -69,7 +73,47 @@ func (l *DNSListener) Stop() {
 	}
 }
 
-// handleQuery is an empty placeholder for future DNS query management.
+// handleQuery manages incoming DNS queries by checking the local cache or redirecting to the tunnel.
 func (l *DNSListener) handleQuery(ctx context.Context, data []byte, addr *net.UDPAddr) {
-	// Placeholder: Do nothing yet, will implement DNS response logic later.
+	if l.client == nil {
+		return
+	}
+
+	// 1. Lite Parse DNS Query
+	lite, err := dnsparser.ParseDNSRequestLite(data)
+	if err != nil {
+		return
+	}
+
+	if !lite.HasQuestion {
+		return
+	}
+
+	question := lite.FirstQuestion
+	now := time.Now()
+
+	// 2. Check Local Cache & Handle Pending Status
+	if l.client.localDNSCache != nil {
+		key := dnscache.BuildKey(question.Name, question.Type, question.Class)
+		res := l.client.localDNSCache.LookupOrCreatePending(key, question.Name, question.Type, question.Class, now)
+
+		if res.Status == dnscache.StatusReady && len(res.Response) > 0 {
+			// Cache Hit - Rewrite Transaction ID and send back
+			resp := dnscache.PatchResponseForQuery(res.Response, data)
+			_, _ = l.conn.WriteToUDP(resp, addr)
+			l.client.log.Debugf("🔍 <green>DNS Cache Hit: %s (%d)</green>", question.Name, question.Type)
+			return
+		}
+
+		if res.Status == dnscache.StatusPending && !res.DispatchNeeded {
+			// Already pending in tunnel and within timeout, don't re-dispatch
+			l.client.log.Debugf("🔍 <yellow>DNS Query Pending: %s (%d)</yellow>", question.Name, question.Type)
+			return
+		}
+
+		// If res.DispatchNeeded is true, we proceed to tunnel dispatch
+	}
+
+	// 3. Dispatch to Tunnel
+	l.client.dispatchDNSQueryToTunnel(data, addr)
 }
