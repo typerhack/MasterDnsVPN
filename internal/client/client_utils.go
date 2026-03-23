@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"masterdnsvpn-go/internal/arq"
 	Enums "masterdnsvpn-go/internal/enums"
 	VpnProto "masterdnsvpn-go/internal/vpnproto"
 )
@@ -245,7 +246,7 @@ func (c *Client) queueImmediateControlAck(streamID uint16, packet VpnProto.Packe
 		return false
 	}
 
-	return s.PushTXPacket(
+	ok = s.PushTXPacket(
 		Enums.DefaultPacketPriority(ackType),
 		ackType,
 		packet.SequenceNum,
@@ -255,6 +256,41 @@ func (c *Client) queueImmediateControlAck(streamID uint16, packet VpnProto.Packe
 		0,
 		nil,
 	)
+
+	return ok
+}
+
+func isStreamScopedAckPacket(packetType uint8) bool {
+	if packetType == Enums.PACKET_STREAM_DATA_ACK {
+		return true
+	}
+	_, ok := Enums.ReverseControlAckFor(packetType)
+	return ok
+}
+
+func (c *Client) consumeInboundStreamAck(packet VpnProto.Packet, s *Stream_client) {
+	if c == nil || s == nil {
+		return
+	}
+
+	arqObj, ok := s.Stream.(*arq.ARQ)
+	if !ok {
+		return
+	}
+
+	handledAck := arqObj.HandleAckPacket(packet.PacketType, packet.SequenceNum, packet.FragmentID)
+
+	switch packet.PacketType {
+	case Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
+		if handledAck {
+			if s.StatusValue() == streamStatusCancelled || arqObj.IsClosed() {
+				s.MarkTerminal(time.Now())
+				if s.StatusValue() != streamStatusCancelled {
+					s.SetStatus(streamStatusTimeWait)
+				}
+			}
+		}
+	}
 }
 
 func (c *Client) preprocessInboundPacket(packet VpnProto.Packet) bool {
@@ -269,7 +305,7 @@ func (c *Client) preprocessInboundPacket(packet VpnProto.Packet) bool {
 
 	if packet.HasStreamID && packet.StreamID != 0 {
 		c.streamsMu.RLock()
-		_, ok := c.active_streams[packet.StreamID]
+		s, ok := c.active_streams[packet.StreamID]
 		c.streamsMu.RUnlock()
 		if !ok {
 			c.handleMissingStreamPacket(packet)
@@ -277,6 +313,10 @@ func (c *Client) preprocessInboundPacket(packet VpnProto.Packet) bool {
 		}
 
 		_ = c.queueImmediateControlAck(packet.StreamID, packet)
+		if isStreamScopedAckPacket(packet.PacketType) {
+			c.consumeInboundStreamAck(packet, s)
+			return true
+		}
 		return false
 	}
 
@@ -285,4 +325,8 @@ func (c *Client) preprocessInboundPacket(packet VpnProto.Packet) bool {
 	}
 
 	return false
+}
+
+func (c *Client) PreprocessInboundPacket(packet VpnProto.Packet) bool {
+	return c.preprocessInboundPacket(packet)
 }

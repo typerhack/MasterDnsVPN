@@ -525,6 +525,49 @@ func isStreamCreationPacketType(packetType uint8) bool {
 	}
 }
 
+func isStreamScopedAckPacket(packetType uint8) bool {
+	if packetType == Enums.PACKET_STREAM_DATA_ACK {
+		return true
+	}
+	_, ok := Enums.ReverseControlAckFor(packetType)
+	return ok
+}
+
+func (s *Server) consumeInboundStreamAck(vpnPacket VpnProto.Packet, stream *Stream_server) {
+	if s == nil || stream == nil || stream.ARQ == nil {
+		return
+	}
+
+	handledAck := stream.ARQ.HandleAckPacket(vpnPacket.PacketType, vpnPacket.SequenceNum, vpnPacket.FragmentID)
+	now := time.Now()
+
+	if handledAck && vpnPacket.PacketType == Enums.PACKET_STREAM_RST_ACK {
+		s.removeStreamDataFragmentsForStream(vpnPacket.SessionID, vpnPacket.StreamID)
+		stream.mu.Lock()
+		stream.Status = "CLOSED"
+		if stream.CloseTime.IsZero() {
+			stream.CloseTime = now
+		}
+		stream.mu.Unlock()
+	} else if handledAck && vpnPacket.PacketType == Enums.PACKET_STREAM_FIN_ACK {
+		if stream.ARQ.IsClosed() {
+			stream.mu.Lock()
+			stream.Status = "CLOSED"
+			if stream.CloseTime.IsZero() {
+				stream.CloseTime = now
+			}
+			stream.mu.Unlock()
+		}
+	}
+
+	switch vpnPacket.PacketType {
+	case Enums.PACKET_SOCKS5_CONNECTED_ACK:
+		if handledAck {
+			stream.ARQ.MarkSocksConnected()
+		}
+	}
+}
+
 func (s *Server) queueImmediateControlAck(record *sessionRecord, packet VpnProto.Packet) bool {
 	if s == nil || record == nil {
 		return false
@@ -613,6 +656,14 @@ func (s *Server) preprocessInboundPacket(vpnPacket VpnProto.Packet) bool {
 	}
 
 	_ = s.queueImmediateControlAck(record, vpnPacket)
+	if vpnPacket.HasStreamID && vpnPacket.StreamID != 0 && isStreamScopedAckPacket(vpnPacket.PacketType) {
+		stream, exists := record.getStream(vpnPacket.StreamID)
+		if !exists || stream == nil {
+			return s.enqueueMissingStreamReset(record, vpnPacket)
+		}
+		s.consumeInboundStreamAck(vpnPacket, stream)
+		return true
+	}
 	return false
 }
 
@@ -840,15 +891,15 @@ func (s *Server) serveQueuedOrPong(questionPacket []byte, requestName string, re
 
 	// New MLQ-based Round-Robin dispatcher
 	if pkt, ok := s.dequeueSessionResponse(sessionID, now); ok {
-		if s.log != nil && s.debugLoggingEnabled() && shouldLogServerPacketFlow(pkt.PacketType) {
-			s.log.Debugf(
-				"\U0001F4E4 <blue>Serving Queued Packet</blue> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Type</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Seq</blue>: <cyan>%d</cyan>",
-				sessionID,
-				Enums.PacketTypeName(pkt.PacketType),
-				pkt.StreamID,
-				pkt.SequenceNum,
-			)
-		}
+		// if s.log != nil && s.debugLoggingEnabled() && shouldLogServerPacketFlow(pkt.PacketType) {
+		// 	s.log.Debugf(
+		// 		"\U0001F4E4 <blue>Serving Queued Packet</blue> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Type</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Seq</blue>: <cyan>%d</cyan>",
+		// 		sessionID,
+		// 		Enums.PacketTypeName(pkt.PacketType),
+		// 		pkt.StreamID,
+		// 		pkt.SequenceNum,
+		// 	)
+		// }
 		resp := s.buildSessionVPNResponse(questionPacket, requestName, record, *pkt)
 		// No pooling here since rebuildSessionVPNResponse might use it or it's a temp packet
 		return resp
@@ -1393,15 +1444,6 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 		return
 	}
 	now := time.Now()
-	if s.log != nil {
-		s.log.Debugf(
-			"🧦 <blue>Processing SOCKS5 SYN</blue> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Frag</blue>: <cyan>%d/%d</cyan>",
-			vpnPacket.SessionID,
-			vpnPacket.StreamID,
-			vpnPacket.FragmentID+1,
-			max(1, int(vpnPacket.TotalFragments)),
-		)
-	}
 	totalFragments := vpnPacket.TotalFragments
 	if totalFragments == 0 {
 		totalFragments = 1
@@ -1772,30 +1814,7 @@ func (s *Server) handleStreamAckPacket(vpnPacket VpnProto.Packet, sessionRecord 
 		return s.enqueueMissingStreamReset(record, vpnPacket)
 	}
 
-	handledAck := stream.ARQ.HandleAckPacket(vpnPacket.PacketType, vpnPacket.SequenceNum, vpnPacket.FragmentID)
-
-	// Update legacy state for visibility (removed)
-	now := time.Now()
-
-	if handledAck && vpnPacket.PacketType == Enums.PACKET_STREAM_RST_ACK {
-		s.removeStreamDataFragmentsForStream(vpnPacket.SessionID, vpnPacket.StreamID)
-		stream.mu.Lock()
-		stream.Status = "CLOSED"
-		if stream.CloseTime.IsZero() {
-			stream.CloseTime = now
-		}
-		stream.mu.Unlock()
-	} else if handledAck && vpnPacket.PacketType == Enums.PACKET_STREAM_FIN_ACK {
-		if stream.ARQ.IsClosed() {
-			stream.mu.Lock()
-			stream.Status = "CLOSED"
-			if stream.CloseTime.IsZero() {
-				stream.CloseTime = now
-			}
-			stream.mu.Unlock()
-		}
-	}
-
+	s.consumeInboundStreamAck(vpnPacket, stream)
 	return true
 }
 
@@ -1814,12 +1833,8 @@ func (s *Server) handleSocksAckPacket(vpnPacket VpnProto.Packet, sessionRecord *
 		return s.enqueueMissingStreamReset(record, vpnPacket)
 	}
 
-	handled := stream.ARQ.HandleAckPacket(vpnPacket.PacketType, vpnPacket.SequenceNum, vpnPacket.FragmentID)
-	if handled && vpnPacket.PacketType == Enums.PACKET_SOCKS5_CONNECTED_ACK {
-		stream.ARQ.MarkSocksConnected()
-	}
-
-	return handled
+	s.consumeInboundStreamAck(vpnPacket, stream)
+	return true
 }
 
 func (s *Server) expireStalledOutboundStreams(sessionID uint8, now time.Time) {

@@ -42,9 +42,13 @@ func handlePackedControlBlocks(c ClientContext, packet VpnProto.Packet, addr *ne
 			TotalFragments:  totalFrag,
 		}
 
+		if c.PreprocessInboundPacket(innerPacket) {
+			continue
+		}
+
 		// Recursively dispatch each inner control signal to its appropriate handler.
 		if err := Dispatch(c, innerPacket, addr); err != nil {
-			c.Log().Warnf("Error dispatching packed block (Type %d, Stream %d): %v", pType, streamID, err)
+			c.Log().Debugf("Error dispatching packed block (Type %d, Stream %d): %v", pType, streamID, err)
 		}
 	}
 

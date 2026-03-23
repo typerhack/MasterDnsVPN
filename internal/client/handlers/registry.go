@@ -23,6 +23,7 @@ type ClientContext interface {
 	IsSessionReady() bool
 	ResponseMode() uint8
 	NotifyPacket(packetType uint8, isInbound bool)
+	PreprocessInboundPacket(packet VpnProto.Packet) bool
 
 	// Stream Management
 	HandleStreamPacket(packet VpnProto.Packet) error

@@ -543,6 +543,16 @@ func (a *ARQ) markFinAcked(sn uint16) {
 	}
 }
 
+func (a *ARQ) clearWaitingAck(packetType uint8) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.waitingAck && a.waitingAckFor == packetType {
+		a.waitingAck = false
+		a.waitingAckFor = 0
+		a.ackWaitDeadline = time.Time{}
+	}
+}
+
 func (a *ARQ) MarkRstSent(seqSN *uint16) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -968,6 +978,15 @@ func (a *ARQ) finalizeClose(reason string) {
 		a.mu.Unlock()
 		return
 	}
+	sndBufLen := len(a.sndBuf)
+	rcvBufLen := len(a.rcvBuf)
+	prevState := a.state
+	finSent := a.finSent
+	finReceived := a.finReceived
+	finAcked := a.finAcked
+	rstSent := a.rstSent
+	rstReceived := a.rstReceived
+	rstAcked := a.rstAcked
 	a.closeReason = reason
 	a.closed = true
 	a.deferredClose = false
@@ -994,13 +1013,28 @@ func (a *ARQ) finalizeClose(reason string) {
 
 	a.clearAllQueues()
 	a.mu.Unlock()
+
+	a.logger.Debugf(
+		"🧹 <green>ARQ Stream Closed</green> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Stream</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Reason</blue>: <yellow>%s</yellow> <magenta>|</magenta> <blue>PrevState</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>SndBuf</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>RcvBuf</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>FIN</blue>: <cyan>%t/%t/%t</cyan> <magenta>|</magenta> <blue>RST</blue>: <cyan>%t/%t/%t</cyan>",
+		a.sessionID,
+		a.streamID,
+		reason,
+		prevState,
+		sndBufLen,
+		rcvBufLen,
+		finSent,
+		finReceived,
+		finAcked,
+		rstSent,
+		rstReceived,
+		rstAcked,
+	)
 }
 
 func (a *ARQ) tryFinalizeRemoteEOF() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.closed || a.remoteWriteClosed || !a.finReceived || a.finSeqReceived == nil || a.rcvNxt != *a.finSeqReceived {
+	if a.closed || !a.finReceived || a.finSeqReceived == nil || a.rcvNxt != *a.finSeqReceived {
+		a.mu.Unlock()
 		return
 	}
 
@@ -1008,16 +1042,21 @@ func (a *ARQ) tryFinalizeRemoteEOF() {
 		select {
 		case <-a.socksHandshake:
 		default:
+			a.mu.Unlock()
 			return
 		}
 	}
 
 	a.remoteWriteClosed = true
+	shouldSendFin := !a.finSent && !a.rstSent && !a.rstReceived && len(a.sndBuf) == 0
+	shouldClose := a.finSent && a.finAcked && len(a.sndBuf) == 0
+	a.mu.Unlock()
 
-	// In Go, closing for write only is trickier, but if it supports CloseWrite, we can.
-	// We'll skip TCP half-close syscalls since net.Conn lacks it inherently without strict types, but it's safe to just ack.
-
-	if a.finSent && a.finAcked && len(a.sndBuf) == 0 {
+	if shouldSendFin {
+		a.initiateGracefulClose("Remote FIN fully handled")
+		return
+	}
+	if shouldClose {
 		go a.Close("Both FIN sides fully acknowledged", false)
 	}
 }
@@ -1066,6 +1105,28 @@ func (a *ARQ) flushReadyLocalData() {
 	for _, chunk := range toWrite {
 		_, err := a.localConn.Write(chunk)
 		if err != nil {
+			a.mu.Lock()
+			finSent := a.finSent
+			finReceived := a.finReceived
+			deferredClose := a.deferredClose
+			waitingAck := a.waitingAck
+			state := a.state
+			a.localWriteClosed = true
+			a.stopLocalRead = true
+			if a.closeReason == "" {
+				a.closeReason = "Local App Closed Connection (writer closed)"
+			}
+			closingLike := finSent || finReceived || deferredClose || waitingAck ||
+				state == StateDraining || state == StateClosing || state == StateTimeWait || state == StateReset
+			a.mu.Unlock()
+
+			if closingLike {
+				if finReceived {
+					a.tryFinalizeRemoteEOF()
+				}
+				return
+			}
+
 			a.Abort("Local App Closed Connection (writer closed)", true)
 			return
 		}
@@ -1163,6 +1224,9 @@ func (a *ARQ) ReceiveAck(sn uint16) bool {
 	a.mu.Unlock()
 
 	if handled {
+		if a.finReceivedLocked() {
+			a.tryFinalizeRemoteEOF()
+		}
 		a.settleTerminalDrain()
 	}
 	return handled
@@ -1296,7 +1360,8 @@ func (a *ARQ) ReceiveControlAck(ackPacketType uint8, sequenceNum uint16, fragmen
 
 	if ackPacketType == Enums.PACKET_STREAM_FIN_ACK && isWaitingFin {
 		a.markFinAcked(sequenceNum)
-		a.finalizeClose("FIN acknowledged")
+		a.clearWaitingAck(Enums.PACKET_STREAM_FIN)
+		a.tryFinalizeRemoteEOF()
 		return true
 	}
 
@@ -1450,7 +1515,7 @@ func (a *ARQ) checkControlRetransmits(now time.Time) {
 
 		ok := a.enqueuer.PushTXPacket(info.Priority, info.PacketType, info.SequenceNum, info.FragmentID, info.TotalFragments, 0, info.TTL, info.Payload)
 		if !ok {
-			delete(a.controlSndBuf, key)
+			info.LastSentAt = now
 			continue
 		}
 

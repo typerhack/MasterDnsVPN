@@ -526,7 +526,7 @@ func (c *Client) HandleSocksConnected(packet VpnProto.Packet) error {
 		}
 	}
 
-	c.log.Infof("🔌 <green>Socks5 successfully connected for stream %d</green>", packet.StreamID)
+	c.log.Debugf("🔌 <green>Socks5 successfully connected for stream %d</green>", packet.StreamID)
 	return nil
 }
 
