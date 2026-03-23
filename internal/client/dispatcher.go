@@ -63,21 +63,6 @@ func (c *Client) asyncStreamDispatcher(ctx context.Context) {
 	defer idleTimer.Stop()
 
 	for {
-		// Wait for signal or timeout
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.txSignal:
-		case <-idleTimer.C:
-		}
-		if !idleTimer.Stop() {
-			select {
-			case <-idleTimer.C:
-			default:
-			}
-		}
-		idleTimer.Reset(20 * time.Millisecond)
-
 		c.streamsMu.RLock()
 		streamCount := len(c.active_streams)
 		ids := make([]int32, 0, streamCount+1)
@@ -93,6 +78,20 @@ func (c *Client) asyncStreamDispatcher(ctx context.Context) {
 		}
 
 		if len(ids) == 0 {
+			// Wait for signal or timeout
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.txSignal:
+			case <-idleTimer.C:
+			}
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(20 * time.Millisecond)
 			continue
 		}
 
@@ -196,6 +195,20 @@ func (c *Client) asyncStreamDispatcher(ctx context.Context) {
 		}
 
 		if selectedID == -2 || item == nil {
+			// Wait for signal or timeout
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.txSignal:
+			case <-idleTimer.C:
+			}
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(20 * time.Millisecond)
 			continue
 		}
 
