@@ -10,17 +10,18 @@ package logger
 import (
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Logger struct {
 	name           string
 	level          int
-	base           *log.Logger
-	fileLogger     *log.Logger
+	mu             sync.Mutex
+	consoleWriter  io.Writer
+	fileWriter     *os.File
 	color          bool
 	appNameText    string
 	appNameColored string
@@ -76,20 +77,20 @@ func New(name, rawLevel string) *Logger {
 func NewWithFile(name, rawLevel, filePath string) *Logger {
 	appName := "[" + name + "]"
 	var consoleWriter io.Writer = os.Stdout
-	var fileLogger *log.Logger
+	var fileWriter *os.File
 
 	if filePath != "" {
 		f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err == nil {
-			fileLogger = log.New(f, "", log.LstdFlags)
+			fileWriter = f
 		}
 	}
 
 	return &Logger{
 		name:           name,
 		level:          parseLevel(rawLevel),
-		base:           log.New(consoleWriter, "", log.LstdFlags),
-		fileLogger:     fileLogger,
+		consoleWriter:  consoleWriter,
+		fileWriter:     fileWriter,
 		color:          shouldUseColor(),
 		appNameText:    appName,
 		appNameColored: "\x1b[36m" + appName + "\x1b[0m",
@@ -124,11 +125,20 @@ func (l *Logger) logf(level int, format string, args ...any) {
 		plainMsg = stripColorTags(msg)
 	}
 
-	if l.fileLogger != nil {
-		l.fileLogger.Print(plainLevelTexts[level], " ", plainMsg)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	ts := time.Now().Format("2006/01/02 15:04:05")
+
+	if l.fileWriter != nil {
+		fileLine := ts + " " + plainLevelTexts[level] + " " + plainMsg + "\n"
+		if _, err := io.WriteString(l.fileWriter, fileLine); err != nil {
+			_ = l.fileWriter.Close()
+			l.fileWriter = nil
+		}
 	}
 
-	if l.base != nil {
+	if l.consoleWriter != nil {
 		appName := l.appNameText
 		levelText := plainLevelTexts[level]
 		finalMsg := plainMsg
@@ -143,7 +153,8 @@ func (l *Logger) logf(level int, format string, args ...any) {
 			levelText = coloredLevelTexts[level]
 		}
 
-		l.base.Print(appName, " ", levelText, " ", finalMsg)
+		consoleLine := ts + " " + appName + " " + levelText + " " + finalMsg + "\n"
+		_, _ = io.WriteString(l.consoleWriter, consoleLine)
 	}
 }
 

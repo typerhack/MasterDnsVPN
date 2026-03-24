@@ -9,7 +9,6 @@ package logger
 
 import (
 	"bytes"
-	"log"
 	"strings"
 	"testing"
 )
@@ -59,11 +58,11 @@ func TestRenderColorTagsRestoresParentColor(t *testing.T) {
 func TestLoggerSuppressesBelowLevel(t *testing.T) {
 	var buf bytes.Buffer
 	l := &Logger{
-		name:        "test",
-		level:       levelWarn,
-		base:        log.New(&buf, "", 0),
-		color:       false,
-		appNameText: "[test]",
+		name:          "test",
+		level:         levelWarn,
+		consoleWriter: &buf,
+		color:         false,
+		appNameText:   "[test]",
 	}
 
 	l.Infof("info message")
