@@ -337,7 +337,10 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr) {
 		return
 	}
 
-	// 2. Queue deterministic non-data ACKs before any handler logic runs.
+	// 2. Notify activity monitor (PingManager)
+	c.NotifyPacket(vpnPacket.PacketType, true)
+
+	// 3. Queue deterministic non-data ACKs before any handler logic runs.
 	if handled := c.preprocessInboundPacket(vpnPacket); handled {
 		return
 	}

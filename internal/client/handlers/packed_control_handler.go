@@ -8,7 +8,6 @@
 package handlers
 
 import (
-	"encoding/binary"
 	Enums "masterdnsvpn-go/internal/enums"
 	VpnProto "masterdnsvpn-go/internal/vpnproto"
 	"net"
@@ -22,10 +21,10 @@ func handlePackedControlBlocks(c ClientContext, packet VpnProto.Packet, addr *ne
 	payload := packet.Payload
 	const blockSize = 7
 
-	for i := 0; i <= len(payload)-blockSize; i += blockSize {
+	for i := 0; i+blockSize <= len(payload); i += blockSize {
 		pType := payload[i]
-		streamID := binary.BigEndian.Uint16(payload[i+1 : i+3])
-		seqNum := binary.BigEndian.Uint16(payload[i+3 : i+5])
+		streamID := uint16(payload[i+1])<<8 | uint16(payload[i+2])
+		seqNum := uint16(payload[i+3])<<8 | uint16(payload[i+4])
 		fragID := payload[i+5]
 		totalFrag := payload[i+6]
 
@@ -46,8 +45,15 @@ func handlePackedControlBlocks(c ClientContext, packet VpnProto.Packet, addr *ne
 			continue
 		}
 
-		// Recursively dispatch each inner control signal to its appropriate handler.
-		if err := Dispatch(c, innerPacket, addr); err != nil {
+		handler := dispatchTable[innerPacket.PacketType]
+		var err error
+		if handler != nil {
+			err = handler(c, innerPacket, addr)
+		} else {
+			err = handleGenericPacket(c, innerPacket, addr)
+		}
+
+		if err != nil {
 			c.Log().Debugf("Error dispatching packed block (Type %d, Stream %d): %v", pType, streamID, err)
 		}
 	}

@@ -64,9 +64,6 @@ func Dispatch(c ClientContext, packet VpnProto.Packet, addr *net.UDPAddr) error 
 		return fmt.Errorf("dispatch failed: nil client context")
 	}
 
-	// 1. Notify activity monitor (PingManager)
-	c.NotifyPacket(packet.PacketType, true)
-
 	// 2. Lookup handler
 	handler := dispatchTable[packet.PacketType]
 	if handler != nil {
