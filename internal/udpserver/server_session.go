@@ -77,11 +77,12 @@ func (s *Server) handleSessionCloseNotice(vpnPacket VpnProto.Packet, now time.Ti
 		return
 	}
 
-	if !s.sessions.Close(vpnPacket.SessionID, now, s.cfg.ClosedSessionRetention()) {
+	record, ok := s.sessions.Close(vpnPacket.SessionID, now, s.cfg.ClosedSessionRetention())
+	if !ok {
 		return
 	}
 
-	s.cleanupClosedSession(vpnPacket.SessionID)
+	s.cleanupClosedSession(vpnPacket.SessionID, record)
 	if s.log != nil {
 		s.log.Infof(
 			"\U0001F6AA <green>Session Closed By Client, Session: <cyan>%d</cyan></green>",
@@ -222,9 +223,12 @@ func (s *Server) queueMainSessionPacket(sessionID uint8, packet VpnProto.Packet)
 	return s.queueSessionPacket(sessionID, packet)
 }
 
-func (s *Server) cleanupClosedSession(sessionID uint8) {
+func (s *Server) cleanupClosedSession(sessionID uint8, record *sessionRecord) {
 	if s == nil || sessionID == 0 {
 		return
+	}
+	if record != nil {
+		record.closeAllStreams("session closed cleanup")
 	}
 	s.deferredSession.RemoveSession(sessionID)
 	s.removeDNSQueryFragmentsForSession(sessionID)

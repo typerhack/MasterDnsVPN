@@ -98,10 +98,6 @@ func (s *Stream_server) PushTXPacket(priority int, packetType uint8, sequenceNum
 	return true
 }
 
-func (s *Stream_server) Close(reason string) {
-	s.CloseStream(false, 0, reason)
-}
-
 func (s *Stream_server) Abort(reason string) {
 	s.CloseStream(true, 0, reason)
 }

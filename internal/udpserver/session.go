@@ -146,6 +146,11 @@ type sessionValidationResult struct {
 	Active *sessionRuntimeView
 }
 
+type closedSessionCleanup struct {
+	ID     uint8
+	record *sessionRecord
+}
+
 type sessionStore struct {
 	mu                     sync.Mutex
 	nextID                 uint16
@@ -338,13 +343,13 @@ func (s *sessionStore) ValidateAndTouch(sessionID uint8, cookie uint8, now time.
 	return sessionValidationResult{}
 }
 
-func (s *sessionStore) Close(sessionID uint8, now time.Time, retention time.Duration) bool {
+func (s *sessionStore) Close(sessionID uint8, now time.Time, retention time.Duration) (*sessionRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	record := s.byID[sessionID]
 	if record == nil {
-		return false
+		return nil, false
 	}
 
 	delete(s.bySig, record.Signature)
@@ -361,10 +366,10 @@ func (s *sessionStore) Close(sessionID uint8, now time.Time, retention time.Dura
 	} else {
 		delete(s.recentClosed, sessionID)
 	}
-	return true
+	return record, true
 }
 
-func (s *sessionStore) Cleanup(now time.Time, idleTimeout time.Duration, closedRetention time.Duration) []uint8 {
+func (s *sessionStore) Cleanup(now time.Time, idleTimeout time.Duration, closedRetention time.Duration) []closedSessionCleanup {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -381,7 +386,7 @@ func (s *sessionStore) Cleanup(now time.Time, idleTimeout time.Duration, closedR
 		return nil
 	}
 
-	expired := make([]uint8, 0, 8)
+	expired := make([]closedSessionCleanup, 0, 8)
 	idleTimeoutNanos := idleTimeout.Nanoseconds()
 	for sessionID := 1; sessionID <= maxServerSessionID; sessionID++ {
 		record := s.byID[sessionID]
@@ -405,7 +410,10 @@ func (s *sessionStore) Cleanup(now time.Time, idleTimeout time.Duration, closedR
 				ExpiresAt:    now.Add(closedRetention),
 			}
 		}
-		expired = append(expired, uint8(sessionID))
+		expired = append(expired, closedSessionCleanup{
+			ID:     uint8(sessionID),
+			record: record,
+		})
 	}
 
 	return expired
@@ -638,6 +646,34 @@ func (r *sessionRecord) removeStream(streamID uint16, now time.Time) {
 	r.noteStreamClosed(streamID, now)
 }
 
+func (r *sessionRecord) closeAllStreams(reason string) {
+	if r == nil {
+		return
+	}
+
+	r.StreamsMu.RLock()
+	streams := make([]*Stream_server, 0, len(r.Streams))
+	for _, stream := range r.Streams {
+		if stream != nil {
+			streams = append(streams, stream)
+		}
+	}
+	r.StreamsMu.RUnlock()
+
+	for _, stream := range streams {
+		stream.Abort(reason)
+	}
+
+	r.StreamsMu.Lock()
+	clear(r.Streams)
+	r.ActiveStreams = r.ActiveStreams[:0]
+	r.StreamsMu.Unlock()
+
+	if r.OrphanQueue != nil {
+		r.OrphanQueue.Clear(nil)
+	}
+}
+
 func (r *sessionRecord) cleanupTerminalStreams(now time.Time, retention time.Duration) {
 	if r == nil {
 		return
@@ -680,6 +716,9 @@ func (r *sessionRecord) cleanupTerminalStreams(now time.Time, retention time.Dur
 	}
 
 	for _, streamID := range removeIDs {
+		if stream, ok := snapshot[streamID]; ok && stream != nil {
+			stream.Abort("terminal stream retention cleanup")
+		}
 		r.removeStream(streamID, now)
 	}
 }

@@ -77,8 +77,8 @@ func (s *Server) sessionCleanupLoop(ctx context.Context) {
 			if len(expired) == 0 {
 				continue
 			}
-			for _, sessionID := range expired {
-				s.cleanupClosedSession(sessionID)
+			for _, expiredSession := range expired {
+				s.cleanupClosedSession(expiredSession.ID, expiredSession.record)
 			}
 			s.log.Infof(
 				"\U0001F4E1 <green>Expired Sessions Cleaned, Count: <cyan>%d</cyan></green>",
