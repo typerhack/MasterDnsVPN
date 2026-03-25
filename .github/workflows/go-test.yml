@@ -129,27 +129,25 @@ jobs:
           cp client_resolvers.simple dist/client_resolvers.txt || true
           cp server_config.toml.simple dist/server_config.toml || true
 
-      - name: Prepare smoke-test config (Windows)
-        if: ${{ matrix.os == 'windows-latest' }}
-        shell: powershell
-        run: |
-          $val = 'smoke-test-key-12345678901234567890123456789012'
-          foreach ($f in @("dist/client_config.toml", "dist/server_config.toml")) {
-            if (Test-Path $f) {
-              (Get-Content $f) -replace 'ENCRYPTION_KEY\s*=\s*""', "ENCRYPTION_KEY = `"$val`"" | Set-Content $f
-            }
-          }
-
-      - name: Prepare smoke-test config (non-Windows)
-        if: ${{ matrix.os != 'windows-latest' }}
+      - name: Prepare smoke-test config
         shell: bash
         run: |
-          val="smoke-test-key-12345678901234567890123456789012"
-          for f in dist/client_config.toml dist/server_config.toml; do
-            if [ -f "$f" ]; then
-              sed -i "s/ENCRYPTION_KEY[[:space:]]*=[[:space:]]*\"\"/ENCRYPTION_KEY = \"$val\"/g" "$f"
-            fi
-          done
+          python3 - <<'PY'
+          import sys
+          import re
+          from pathlib import Path
+
+          val = "smoke-test-key-12345678901234567890123456789012"
+          for f_name in ["dist/client_config.toml", "dist/server_config.toml"]:
+              p = Path(f_name)
+              if not p.exists(): continue
+              content = p.read_text(encoding="utf-8", errors="ignore")
+              content = re.sub(r'ENCRYPTION_KEY\s*=\s*""', f'ENCRYPTION_KEY = "{val}"', content)
+              # Ensure server key file points to something that won't fail if we use it
+              if "server" in f_name:
+                  content = re.sub(r'ENCRYPTION_KEY_FILE\s*=\s*".*?"', 'ENCRYPTION_KEY_FILE = "encrypt_key.txt"', content)
+              p.write_text(content, encoding="utf-8")
+          PY
 
       - name: Smoke test executables (Windows)
         if: ${{ matrix.os == 'windows-latest' }}
@@ -161,35 +159,33 @@ jobs:
 
           $clientBin = "MasterDnsVPN_Client_${{ matrix.platform }}_${{ matrix.arch }}${{ matrix.ext }}"
           $serverBin = "MasterDnsVPN_Server_${{ matrix.platform }}_${{ matrix.arch }}${{ matrix.ext }}"
-          $targets = @($clientBin, $serverBin)
 
-          foreach ($bin in $targets) {
-            if (-not (Test-Path $bin)) {
-              throw "Smoke test target not found: $bin"
-            }
-
-            Write-Host "Smoke testing $bin ..."
-            $outFile = "$bin.smoke.out"
-            $errFile = "$bin.smoke.err"
-            # We use Start-Process because some Go binaries might hang if stdin is not closed or similar
-            $proc = Start-Process -FilePath ".\\$bin" -ArgumentList "--config", "client_config.toml" -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-            Start-Sleep -Seconds 5
-
-            if ($proc.HasExited) {
-              $code = $proc.ExitCode
-              Write-Host "$bin exited early with code $code"
-              if ($code -ne 0) {
-                Write-Host "---- STDOUT ($bin) ----"
-                if (Test-Path $outFile) { Get-Content $outFile }
-                Write-Host "---- STDERR ($bin) ----"
-                if (Test-Path $errFile) { Get-Content $errFile }
-                throw "Smoke test failed for $bin with exit code $code"
+          # Client Test
+          Write-Host "Smoke testing $clientBin ..."
+          $proc = Start-Process -FilePath ".\\$clientBin" -ArgumentList "--config", "client_config.toml" -PassThru -NoNewWindow -RedirectStandardOutput "$clientBin.smoke.out" -RedirectStandardError "$clientBin.smoke.err"
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+              if ($proc.ExitCode -ne 0) {
+                  Get-Content "$clientBin.smoke.out" -ErrorAction SilentlyContinue
+                  Get-Content "$clientBin.smoke.err" -ErrorAction SilentlyContinue
+                  throw "Client smoke test failed with code $($proc.ExitCode)"
               }
-            } else {
+          } else {
               Stop-Process -Id $proc.Id -Force
-              Wait-Process -Id $proc.Id -ErrorAction SilentlyContinue
-              Write-Host "$bin stayed alive for 5s; terminated intentionally."
-            }
+          }
+
+          # Server Test
+          Write-Host "Smoke testing $serverBin ..."
+          $proc = Start-Process -FilePath ".\\$serverBin" -ArgumentList "--config", "server_config.toml" -PassThru -NoNewWindow -RedirectStandardOutput "$serverBin.smoke.out" -RedirectStandardError "$serverBin.smoke.err"
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+              if ($proc.ExitCode -ne 0) {
+                  Get-Content "$serverBin.smoke.out" -ErrorAction SilentlyContinue
+                  Get-Content "$serverBin.smoke.err" -ErrorAction SilentlyContinue
+                  throw "Server smoke test failed with code $($proc.ExitCode)"
+              }
+          } else {
+              Stop-Process -Id $proc.Id -Force
           }
 
       - name: Smoke test executables (non-Windows)
@@ -213,8 +209,12 @@ jobs:
             out_file="$bin.smoke.out"
             err_file="$bin.smoke.err"
 
-            # Use a config that likely won't fail immediately (though without keys/resolvers it might)
-            "./$bin" >"$out_file" 2>"$err_file" &
+            conf="client_config.toml"
+            if [[ "$bin" == *"Server"* ]]; then
+              conf="server_config.toml"
+            fi
+
+            "./$bin" --config "$conf" >"$out_file" 2>"$err_file" &
             pid=$!
             sleep 5
 
