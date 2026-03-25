@@ -1,28 +1,39 @@
 # ==============================================================================
-# MasterDnsVPN Go Server Configuration
-# Author: MasterkinG32
-# Github: https://github.com/masterking32
-# Year: 2026
+# MasterDnsVPN Go Server Configuration (Sample)
+# Profile: high-loss / high-latency / many resolvers / many concurrent streams
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 1) UDP Listener & Workers
+# 1) Listener & Front-Door Capacity
 # ------------------------------------------------------------------------------
 
 UDP_HOST = "0.0.0.0"
 UDP_PORT = 53
-UDP_READERS = 2
-DNS_REQUEST_WORKERS = 8
-DEFERRED_SESSION_WORKERS = 4
-DEFERRED_SESSION_QUEUE_LIMIT = 256
-
+UDP_READERS = 4
+DNS_REQUEST_WORKERS = 16
+MAX_CONCURRENT_REQUESTS = 16384
 SOCKET_BUFFER_SIZE = 8388608
-MAX_CONCURRENT_REQUESTS = 4096
 MAX_PACKET_SIZE = 65535
 DROP_LOG_INTERVAL_SECONDS = 2.0
 
 # ------------------------------------------------------------------------------
-# 2) Session & Invalid Cookie Lifecycle
+# 2) Deferred Session Runtime
+# ------------------------------------------------------------------------------
+
+# These workers serialize expensive per-session/per-stream tasks such as
+# DNS processing, SOCKS setup, and ordered data handling behind SYN.
+DEFERRED_SESSION_WORKERS = 8
+DEFERRED_SESSION_QUEUE_LIMIT = 4096
+
+# Initial queue/store capacities to reduce reallocations under pressure.
+SESSION_ORPHAN_QUEUE_INITIAL_CAPACITY = 64
+STREAM_QUEUE_INITIAL_CAPACITY = 128
+DNS_FRAGMENT_STORE_CAPACITY = 256
+SOCKS5_FRAGMENT_STORE_CAPACITY = 512
+STREAM_DATA_FRAGMENT_STORE_CAPACITY = 128
+
+# ------------------------------------------------------------------------------
+# 3) Session Lifecycle & Invalid Cookie Handling
 # ------------------------------------------------------------------------------
 
 INVALID_COOKIE_WINDOW_SECONDS = 2.0
@@ -33,21 +44,18 @@ SESSION_CLEANUP_INTERVAL_SECONDS = 30.0
 CLOSED_SESSION_RETENTION_SECONDS = 600.0
 
 # ------------------------------------------------------------------------------
+# 4) DNS Tunnel Upstream
+# ------------------------------------------------------------------------------
 
-DNS_UPSTREAM_SERVERS = ["1.1.1.1:53"]
+DNS_UPSTREAM_SERVERS = ["1.1.1.1:53", "1.0.0.1:53"]
 DNS_UPSTREAM_TIMEOUT = 4.0
 DNS_FRAGMENT_ASSEMBLY_TIMEOUT = 300.0
-DNS_CACHE_MAX_RECORDS = 2000
-DNS_CACHE_TTL_SECONDS = 3600.0
+DNS_CACHE_MAX_RECORDS = 20000
+DNS_CACHE_TTL_SECONDS = 300.0
 
 # ------------------------------------------------------------------------------
-# 5) Protocol & Forwarding Topology
+# 5) Forwarding / SOCKS Upstream
 # ------------------------------------------------------------------------------
-
-# Must match client PROTOCOL_TYPE.
-# - "SOCKS5": optimized mode
-# - "TCP": raw TCP forwarding mode
-PROTOCOL_TYPE = "SOCKS5"
 
 SOCKS_CONNECT_TIMEOUT = 8.0
 USE_EXTERNAL_SOCKS5 = false
@@ -62,30 +70,27 @@ FORWARD_PORT = 0
 # ------------------------------------------------------------------------------
 
 DOMAIN = ["v.domain.com"]
+MIN_VPN_LABEL_LENGTH = 3
 
-# Compression types allowed by server policy:
 # 0=OFF, 1=ZSTD, 2=LZ4, 3=ZLIB
 SUPPORTED_UPLOAD_COMPRESSION_TYPES = [0, 1, 2, 3]
 SUPPORTED_DOWNLOAD_COMPRESSION_TYPES = [0, 1, 2, 3]
 
 # ------------------------------------------------------------------------------
-# 7) Encryption & Logging
+# 7) Security
 # ------------------------------------------------------------------------------
 
-# Encryption method:
 # 0=None, 1=XOR, 2=ChaCha20, 3=AES-128-GCM, 4=AES-192-GCM, 5=AES-256-GCM
 DATA_ENCRYPTION_METHOD = 1
-
 ENCRYPTION_KEY_FILE = "encrypt_key.txt"
-LOG_LEVEL = "INFO"
 
-# ARQ Window Size (Default: 600)
-# This limits the number of out-of-order packets stored in memory per stream.
-ARQ_WINDOW_SIZE = 600
+# ------------------------------------------------------------------------------
+# 8) ARQ & Packing
+# ------------------------------------------------------------------------------
 
-# ARQ timing and retry controls.
-# These defaults are more resilient on lossy/high-latency links and reduce
-# aggressive disconnects when packets or ACKs are delayed.
+MAX_PACKETS_PER_BATCH = 10
+
+ARQ_WINDOW_SIZE = 2000
 ARQ_INITIAL_RTO_SECONDS = 1.0
 ARQ_MAX_RTO_SECONDS = 8.0
 ARQ_CONTROL_INITIAL_RTO_SECONDS = 1.0
@@ -98,3 +103,8 @@ ARQ_MAX_DATA_RETRIES = 800
 ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS = 90.0
 ARQ_TERMINAL_ACK_WAIT_TIMEOUT_SECONDS = 60.0
 
+# ------------------------------------------------------------------------------
+# 9) Logging
+# ------------------------------------------------------------------------------
+
+LOG_LEVEL = "INFO"

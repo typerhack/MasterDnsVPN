@@ -1,97 +1,122 @@
 # ==============================================================================
 # MasterDnsVPN Go Client Configuration (Sample)
-# Author: MasterkinG32 (Github: https://github.com/masterking32)
-# Year: 2026
-# ------------------------------------------------------------------------------
-# These settings are optimized for high-performance and low-latency operation.
-# Use this file as a template for your 'client_config.toml'.
+# Profile: high-loss / high-latency / many resolvers / small MTU
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 1) Core Tunnel & Protocol
+# 1) Tunnel Identity & Security
 # ------------------------------------------------------------------------------
-
-# Transport protocol between client and server:
-# - "SOCKS5": optimized proxy mode (recommended)
-# - "TCP": raw TCP tunnel mode
-PROTOCOL_TYPE = "SOCKS5"
 
 # Must match server DOMAIN values.
 DOMAINS = ["v.domain.com"]
 
-# Encryption method:
 # 0=None, 1=XOR, 2=ChaCha20, 3=AES-128-GCM, 4=AES-192-GCM, 5=AES-256-GCM
-# Must match server DATA_ENCRYPTION_METHOD.
 DATA_ENCRYPTION_METHOD = 1
 
-# Shared secret key with server. Must match server's ENCRYPTION_KEY.
+# Must match server encryption key.
 ENCRYPTION_KEY = ""
 
 # ------------------------------------------------------------------------------
-# 2) Local Listener & SOCKS5 Authentication
+# 2) Local Listener
 # ------------------------------------------------------------------------------
 
-# The IP and Port the client will listen on locally.
+# Local client listener.
+# SOCKS5 is the primary mode. TCP is raw tunnel mode.
+PROTOCOL_TYPE = "SOCKS5"
 LISTEN_IP = "127.0.0.1"
 LISTEN_PORT = 18000
 
-# Local SOCKS5 authentication settings.
-# This applies when PROTOCOL_TYPE="SOCKS5" to secure the local proxy.
+# Protect the local SOCKS5 listener if needed.
 SOCKS5_AUTH = false
 SOCKS5_USER = "master_dns_vpn"
 SOCKS5_PASS = "master_dns_vpn"
 
 # ------------------------------------------------------------------------------
-# 3) Local DNS Listener & Cache
+# 3) Local DNS
 # ------------------------------------------------------------------------------
 
-# Optional local DNS server exposed by the client.
-# When enabled, point your system/browser DNS to LOCAL_DNS_IP:LOCAL_DNS_PORT.
 LOCAL_DNS_ENABLED = false
 LOCAL_DNS_IP = "127.0.0.1"
 LOCAL_DNS_PORT = 53
 
-# DNS Cache settings.
-# Used to speed up recurring lookups and reduce tunnel traffic.
-LOCAL_DNS_CACHE_MAX_RECORDS = 5000
-LOCAL_DNS_CACHE_TTL_SECONDS = 28800.0  # 8 hours
+LOCAL_DNS_CACHE_MAX_RECORDS = 10000
+LOCAL_DNS_CACHE_TTL_SECONDS = 14400.0
+LOCAL_DNS_PENDING_TIMEOUT_SECONDS = 300.0
+LOCAL_DNS_CACHE_PERSIST_TO_FILE = true
+LOCAL_DNS_CACHE_FLUSH_INTERVAL_SECONDS = 60.0
+
 # ------------------------------------------------------------------------------
-# 4) Resolver Selection & Reliability
+# 4) Resolver Strategy & Reliability
 # ------------------------------------------------------------------------------
 
-# Resolver balancing strategy:
-# 0 = Round Robin (Default)
-# 1 = Random
-# 2 = Round Robin
-# 3 = Least Loss (Calculated based on packet success rate)
-# 4 = Lowest Latency (Calculated based on RTT)
+# 0=Round Robin, 1=Random, 2=Round Robin, 3=Least Loss, 4=Lowest Latency
 RESOLVER_BALANCING_STRATEGY = 0
 
-# Send each DNS query N times for reliability in lossy networks.
-# 1 = no duplication. 2 is the recommended starting point for unstable links.
-PACKET_DUPLICATION_COUNT = 2
+# Profile tuned for very lossy links with many resolvers.
+PACKET_DUPLICATION_COUNT = 3
+SETUP_PACKET_DUPLICATION_COUNT = 5
 
-# Duplication count for sensitive control packets (SYN).
-# Should be >= PACKET_DUPLICATION_COUNT.
-SETUP_PACKET_DUPLICATION_COUNT = 3
-
-# Asking the server to encode DNS payloads (increases compatibility with some ISPs).
+# Some DNS paths behave better with base-encoded labels. Keep false unless needed.
 BASE_ENCODE_DATA = false
 
-# Compression settings:
+# ------------------------------------------------------------------------------
+# 5) Compression
+# ------------------------------------------------------------------------------
+
 # 0=OFF, 1=ZSTD, 2=LZ4, 3=ZLIB
 UPLOAD_COMPRESSION_TYPE = 0
 DOWNLOAD_COMPRESSION_TYPE = 0
+COMPRESSION_MIN_SIZE = 128
 
-# Minimum payload size (bytes) to attempt compression.
-COMPRESSION_MIN_SIZE = 100
+# ------------------------------------------------------------------------------
+# 6) MTU Discovery
+# ------------------------------------------------------------------------------
 
-# Internal ARQ window size.
-# Larger values increase throughput on high-latency links but use more memory.
-ARQ_WINDOW_SIZE = 600
+# This sample is tuned for very small MTUs similar to your stress scenario.
+MIN_UPLOAD_MTU = 40
+MAX_UPLOAD_MTU = 150
 
-# ARQ timing and retry controls.
-# These defaults are tuned to be more tolerant of delay and packet loss.
+MIN_DOWNLOAD_MTU = 100
+MAX_DOWNLOAD_MTU = 500
+
+MTU_TEST_RETRIES = 2
+MTU_TEST_TIMEOUT = 2.0
+MTU_TEST_PARALLELISM = 16
+
+SAVE_MTU_SERVERS_TO_FILE = false
+MTU_SERVERS_FILE_NAME = "masterdnsvpn_success_test_{time}.log"
+MTU_SERVERS_FILE_FORMAT = "{IP} - UP: {UP_MTU} DOWN: {DOWN-MTU}"
+MTU_USING_SECTION_SEPARATOR_TEXT = ""
+MTU_REMOVED_SERVER_LOG_FORMAT = ""
+MTU_ADDED_SERVER_LOG_FORMAT = ""
+
+# ------------------------------------------------------------------------------
+# 7) Client Runtime Sizing
+# ------------------------------------------------------------------------------
+
+# Async runtime workers and queue sizes.
+TUNNEL_READER_WORKERS = 6
+TUNNEL_WRITER_WORKERS = 6
+TUNNEL_PROCESS_WORKERS = 4
+TUNNEL_PACKET_TIMEOUT_SECONDS = 8.0
+TX_CHANNEL_SIZE = 4096
+RX_CHANNEL_SIZE = 4096
+
+# Per-resolver UDP connection reuse pool.
+RESOLVER_UDP_CONNECTION_POOL_SIZE = 64
+
+# Initial queue/store capacities to reduce reallocations under many active streams.
+STREAM_QUEUE_INITIAL_CAPACITY = 128
+ORPHAN_QUEUE_INITIAL_CAPACITY = 32
+DNS_RESPONSE_FRAGMENT_STORE_CAPACITY = 256
+
+# ------------------------------------------------------------------------------
+# 8) ARQ & Packing
+# ------------------------------------------------------------------------------
+
+MAX_PACKETS_PER_BATCH = 5
+
+ARQ_WINDOW_SIZE = 2000
 ARQ_INITIAL_RTO_SECONDS = 1.0
 ARQ_MAX_RTO_SECONDS = 8.0
 ARQ_CONTROL_INITIAL_RTO_SECONDS = 1.0
@@ -104,42 +129,8 @@ ARQ_MAX_DATA_RETRIES = 800
 ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS = 90.0
 ARQ_TERMINAL_ACK_WAIT_TIMEOUT_SECONDS = 60.0
 
-# Hard cap for how many small control packets may be packed into one block.
-# 1 = no packing. 5 is a good default for high-MTU links.
-MAX_PACKETS_PER_BATCH = 5
-
 # ------------------------------------------------------------------------------
-# 5) MTU Discovery & Successful Result Export
+# 9) Logging
 # ------------------------------------------------------------------------------
 
-# Minimum accepted MTU values during resolver validation.
-MIN_UPLOAD_MTU = 70
-MIN_DOWNLOAD_MTU = 150
-
-# Initial upper bounds for MTU probing.
-MAX_UPLOAD_MTU = 150
-MAX_DOWNLOAD_MTU = 200
-
-# MTU test aggressiveness.
-MTU_TEST_RETRIES = 2
-MTU_TEST_TIMEOUT = 2.0
-
-# Number of resolver-domain pairs tested in parallel during initial MTU scan.
-MTU_TEST_PARALLELISM = 6
-
-# Export successful MTU-tested resolvers to a log file.
-SAVE_MTU_SERVERS_TO_FILE = false
-MTU_SERVERS_FILE_NAME = "masterdnsvpn_success_test_{time}.log"
-MTU_SERVERS_FILE_FORMAT = "{IP} - UP: {UP_MTU} DOWN: {DOWN-MTU}"
-
-# Optional text/logs for MTU export.
-MTU_USING_SECTION_SEPARATOR_TEXT = ""
-MTU_REMOVED_SERVER_LOG_FORMAT = ""
-MTU_ADDED_SERVER_LOG_FORMAT = ""
-
-# ------------------------------------------------------------------------------
-# 6) Logging
-# ------------------------------------------------------------------------------
-
-# Log level: DEBUG, INFO, WARNING, ERROR
 LOG_LEVEL = "INFO"

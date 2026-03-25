@@ -67,6 +67,7 @@ type sessionRecord struct {
 	ActiveStreams  []uint16 // Sorted list of active stream IDs for Round-Robin
 	RRStreamID     int32    // Last served stream ID for RR
 	EnqueueSeq     uint64   // Global sequence for FIFO inside same priority
+	StreamQueueCap int
 	StreamsMu      sync.RWMutex
 	RecentlyClosed map[uint16]time.Time
 	OrphanQueue    *mlq.MultiLevelQueue[VpnProto.Packet]
@@ -161,14 +162,24 @@ type sessionStore struct {
 	byID                   [maxServerSessionID + 1]*sessionRecord
 	bySig                  map[[sessionInitDataSize]byte]uint8
 	recentClosed           map[uint8]closedSessionRecord
+	orphanQueueCap         int
+	streamQueueCap         int
 }
 
-func newSessionStore() *sessionStore {
+func newSessionStore(orphanQueueCap int, streamQueueCap int) *sessionStore {
+	if orphanQueueCap < 1 {
+		orphanQueueCap = 8
+	}
+	if streamQueueCap < 1 {
+		streamQueueCap = 32
+	}
 	return &sessionStore{
 		bySig:        make(map[[sessionInitDataSize]byte]uint8, 64),
 		recentClosed: make(map[uint8]closedSessionRecord, 32),
 		cookieIndex:  32,
 		nextID:       1,
+		orphanQueueCap: orphanQueueCap,
+		streamQueueCap: streamQueueCap,
 	}
 }
 
@@ -202,7 +213,7 @@ func (s *sessionStore) findOrCreate(payload []byte, uploadCompressionType uint8,
 		return nil, false, ErrSessionTableFull
 	}
 
-	record := &sessionRecord{
+		record := &sessionRecord{
 		ID:             uint8(slot),
 		ResponseMode:   payload[0],
 		CreatedAt:      now,
@@ -210,8 +221,9 @@ func (s *sessionStore) findOrCreate(payload []byte, uploadCompressionType uint8,
 		Signature:      signature,
 		Streams:        make(map[uint16]*Stream_server),
 		ActiveStreams:  make([]uint16, 0, 8),
+		StreamQueueCap: s.streamQueueCap,
 		RecentlyClosed: make(map[uint16]time.Time, 8),
-		OrphanQueue:    mlq.New[VpnProto.Packet](8),
+		OrphanQueue:    mlq.New[VpnProto.Packet](s.orphanQueueCap),
 	}
 	// Initialize virtual Stream 0 for control packets
 	record.ensureStream0(nil) // Caller should update logger if needed
@@ -546,7 +558,7 @@ func (r *sessionRecord) getOrCreateStream(streamID uint16, arqConfig arq.Config,
 		return s
 	}
 
-	s := NewStreamServer(streamID, r.ID, arqConfig, localConn, r.DownloadMTUBytes, logger)
+	s := NewStreamServer(streamID, r.ID, arqConfig, localConn, r.DownloadMTUBytes, r.StreamQueueCap, logger)
 	r.Streams[streamID] = s
 
 	// Active streams tracking: keep sorted for Round-Robin predictability

@@ -94,7 +94,7 @@ func TestCleanupClosedSessionClosesStreamsAndClearsQueues(t *testing.T) {
 }
 
 func TestSessionStoreCleanupReturnsExpiredRecordForFollowupCleanup(t *testing.T) {
-	store := newSessionStore()
+	store := newSessionStore(8, 32)
 	record := newTestSessionRecord(9)
 	record.Signature[0] = 1
 	record.Cookie = 99

@@ -217,12 +217,12 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 		mtuAddedServerLogFormat:   cfg.MTUAddedServerLogFormat,
 
 		// Workers config
-		tunnelReaderWorkers:  4,
-		tunnelWriterWorkers:  4,
-		tunnelProcessWorkers: 2,
-		tunnelPacketTimeout:  time.Second * 5,
-		txChannel:            make(chan asyncPacket, 1024),
-		rxChannel:            make(chan asyncReadPacket, 1024),
+		tunnelReaderWorkers:  cfg.TunnelReaderWorkers,
+		tunnelWriterWorkers:  cfg.TunnelWriterWorkers,
+		tunnelProcessWorkers: cfg.TunnelProcessWorkers,
+		tunnelPacketTimeout:  time.Duration(cfg.TunnelPacketTimeoutSec * float64(time.Second)),
+		txChannel:            make(chan asyncPacket, cfg.TXChannelSize),
+		rxChannel:            make(chan asyncReadPacket, cfg.RXChannelSize),
 		active_streams:       make(map[uint16]*Stream_client),
 		txSignal:             make(chan struct{}, 1),
 
@@ -232,11 +232,11 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 			time.Duration(cfg.LocalDNSCacheTTLSeconds)*time.Second,
 			time.Duration(cfg.LocalDNSPendingTimeoutSec)*time.Second,
 		),
-		dnsResponses:           fragmentStore.New[dnsFragmentKey](128),
+		dnsResponses:           fragmentStore.New[dnsFragmentKey](cfg.DNSResponseFragmentStoreCap),
 		localDNSCachePersist:   cfg.LocalDNSCachePersist,
 		localDNSCachePath:      cfg.LocalDNSCachePath(),
 		localDNSCacheFlushTick: time.Duration(cfg.LocalDNSCacheFlushSec) * time.Second,
-		orphanQueue:            mlq.New[VpnProto.Packet](8),
+		orphanQueue:            mlq.New[VpnProto.Packet](cfg.OrphanQueueInitialCapacity),
 		sessionResetSignal:     make(chan struct{}, 1),
 	}
 	c.pingManager = newPingManager(c)

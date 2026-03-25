@@ -112,7 +112,7 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 		log:                  log,
 		codec:                codec,
 		domainMatcher:        domainMatcher.New(cfg.Domain, cfg.MinVPNLabelLength),
-		sessions:             newSessionStore(),
+		sessions:             newSessionStore(cfg.SessionOrphanQueueInitialCap, cfg.StreamQueueInitialCapacity),
 		deferredSession:      newDeferredSessionProcessor(cfg.DeferredSessionWorkers, cfg.DeferredSessionQueueLimit, log),
 		invalidCookieTracker: newInvalidCookieTracker(),
 		dnsCache: dnsCache.New(
@@ -122,9 +122,9 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 		),
 		dnsResolveInflight:  newDNSResolveInflightManager(dnsFragmentTimeout),
 		dnsUpstreamServers:  append([]string(nil), cfg.DNSUpstreamServers...),
-		dnsFragments:        fragmentStore.New[dnsFragmentKey](32),
-		socks5Fragments:     fragmentStore.New[socks5FragmentKey](32),
-		streamDataFragments: fragmentStore.New[streamDataFragmentKey](128),
+		dnsFragments:        fragmentStore.New[dnsFragmentKey](cfg.DNSFragmentStoreCapacity),
+		socks5Fragments:     fragmentStore.New[socks5FragmentKey](cfg.SOCKS5FragmentStoreCapacity),
+		streamDataFragments: fragmentStore.New[streamDataFragmentKey](cfg.StreamDataFragmentStoreCapacity),
 		dnsFragmentTimeout:  dnsFragmentTimeout,
 		dnsUpstreamBufferPool: sync.Pool{
 			New: func() any {

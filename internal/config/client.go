@@ -53,6 +53,16 @@ type ClientConfig struct {
 	MTUTestRetries               int               `toml:"MTU_TEST_RETRIES"`
 	MTUTestTimeout               float64           `toml:"MTU_TEST_TIMEOUT"`
 	MTUTestParallelism           int               `toml:"MTU_TEST_PARALLELISM"`
+	TunnelReaderWorkers          int               `toml:"TUNNEL_READER_WORKERS"`
+	TunnelWriterWorkers          int               `toml:"TUNNEL_WRITER_WORKERS"`
+	TunnelProcessWorkers         int               `toml:"TUNNEL_PROCESS_WORKERS"`
+	TunnelPacketTimeoutSec       float64           `toml:"TUNNEL_PACKET_TIMEOUT_SECONDS"`
+	TXChannelSize                int               `toml:"TX_CHANNEL_SIZE"`
+	RXChannelSize                int               `toml:"RX_CHANNEL_SIZE"`
+	ResolverUDPConnectionPoolSize int              `toml:"RESOLVER_UDP_CONNECTION_POOL_SIZE"`
+	StreamQueueInitialCapacity   int               `toml:"STREAM_QUEUE_INITIAL_CAPACITY"`
+	OrphanQueueInitialCapacity   int               `toml:"ORPHAN_QUEUE_INITIAL_CAPACITY"`
+	DNSResponseFragmentStoreCap  int               `toml:"DNS_RESPONSE_FRAGMENT_STORE_CAPACITY"`
 	SaveMTUServersToFile         bool              `toml:"SAVE_MTU_SERVERS_TO_FILE"`
 	MTUServersFileName           string            `toml:"MTU_SERVERS_FILE_NAME"`
 	MTUServersFileFormat         string            `toml:"MTU_SERVERS_FILE_FORMAT"`
@@ -95,21 +105,31 @@ func defaultClientConfig() ClientConfig {
 		LocalDNSCachePersist:         true,
 		LocalDNSCacheFlushSec:        60.0,
 		ResolverBalancingStrategy:    0,
-		PacketDuplicationCount:       2,
-		SetupPacketDuplicationCount:  3,
+		PacketDuplicationCount:       5,
+		SetupPacketDuplicationCount:  5,
 		BaseEncodeData:               false,
 		UploadCompressionType:        compression.TypeOff,
 		DownloadCompressionType:      compression.TypeOff,
 		CompressionMinSize:           compression.DefaultMinSize,
 		DataEncryptionMethod:         1,
 		EncryptionKey:                "",
-		MinUploadMTU:                 70,
-		MinDownloadMTU:               150,
-		MaxUploadMTU:                 150,
-		MaxDownloadMTU:               200,
+		MinUploadMTU:                 40,
+		MinDownloadMTU:               100,
+		MaxUploadMTU:                 64,
+		MaxDownloadMTU:               140,
 		MTUTestRetries:               2,
-		MTUTestTimeout:               2.0,
-		MTUTestParallelism:           6,
+		MTUTestTimeout:               4.0,
+		MTUTestParallelism:           16,
+		TunnelReaderWorkers:          6,
+		TunnelWriterWorkers:          6,
+		TunnelProcessWorkers:         4,
+		TunnelPacketTimeoutSec:       8.0,
+		TXChannelSize:                4096,
+		RXChannelSize:                4096,
+		ResolverUDPConnectionPoolSize: 64,
+		StreamQueueInitialCapacity:   128,
+		OrphanQueueInitialCapacity:   32,
+		DNSResponseFragmentStoreCap:  256,
 		SaveMTUServersToFile:         false,
 		MTUServersFileName:           "masterdnsvpn_success_test_{time}.log",
 		MTUServersFileFormat:         "{IP} - UP: {UP_MTU} DOWN: {DOWN-MTU}",
@@ -117,7 +137,7 @@ func defaultClientConfig() ClientConfig {
 		MTURemovedServerLogFormat:    "",
 		MTUAddedServerLogFormat:      "",
 		LogLevel:                     "INFO",
-		MaxPacketsPerBatch:           5,
+		MaxPacketsPerBatch:           8,
 		ARQWindowSize:                2000,
 		ARQInitialRTOSeconds:         1.0,
 		ARQMaxRTOSeconds:             8.0,
@@ -242,6 +262,16 @@ func LoadClientConfig(filename string) (ClientConfig, error) {
 	cfg.MTUTestRetries = defaultIntBelow(cfg.MTUTestRetries, 1, 1)
 	cfg.MTUTestTimeout = defaultFloatAtMostZero(cfg.MTUTestTimeout, 1.0)
 	cfg.MTUTestParallelism = defaultIntBelow(cfg.MTUTestParallelism, 1, 1)
+	cfg.TunnelReaderWorkers = clampInt(defaultIntBelow(cfg.TunnelReaderWorkers, 1, 6), 1, 64)
+	cfg.TunnelWriterWorkers = clampInt(defaultIntBelow(cfg.TunnelWriterWorkers, 1, 6), 1, 64)
+	cfg.TunnelProcessWorkers = clampInt(defaultIntBelow(cfg.TunnelProcessWorkers, 1, 4), 1, 64)
+	cfg.TunnelPacketTimeoutSec = clampFloat(defaultFloatAtMostZero(cfg.TunnelPacketTimeoutSec, 8.0), 0.5, 120.0)
+	cfg.TXChannelSize = clampInt(defaultIntBelow(cfg.TXChannelSize, 1, 4096), 64, 65536)
+	cfg.RXChannelSize = clampInt(defaultIntBelow(cfg.RXChannelSize, 1, 4096), 64, 65536)
+	cfg.ResolverUDPConnectionPoolSize = clampInt(defaultIntBelow(cfg.ResolverUDPConnectionPoolSize, 1, 64), 1, 1024)
+	cfg.StreamQueueInitialCapacity = clampInt(defaultIntBelow(cfg.StreamQueueInitialCapacity, 1, 128), 8, 65536)
+	cfg.OrphanQueueInitialCapacity = clampInt(defaultIntBelow(cfg.OrphanQueueInitialCapacity, 1, 32), 4, 4096)
+	cfg.DNSResponseFragmentStoreCap = clampInt(defaultIntBelow(cfg.DNSResponseFragmentStoreCap, 1, 256), 16, 16384)
 	cfg.MTUServersFileName = strings.TrimSpace(cfg.MTUServersFileName)
 	cfg.MTUServersFileFormat = strings.TrimSpace(cfg.MTUServersFileFormat)
 	cfg.MTUUsingSeparatorText = strings.TrimSpace(cfg.MTUUsingSeparatorText)

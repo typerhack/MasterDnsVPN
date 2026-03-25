@@ -49,11 +49,14 @@ type streamDataFragmentKey struct {
 	sequenceNum uint16
 }
 
-func NewStreamServer(streamID uint16, sessionID uint8, arqConfig arq.Config, localConn io.ReadWriteCloser, mtu int, logger arq.Logger) *Stream_server {
+func NewStreamServer(streamID uint16, sessionID uint8, arqConfig arq.Config, localConn io.ReadWriteCloser, mtu int, queueInitialCapacity int, logger arq.Logger) *Stream_server {
+	if queueInitialCapacity < 1 {
+		queueInitialCapacity = 32
+	}
 	s := &Stream_server{
 		ID:           streamID,
 		SessionID:    sessionID,
-		TXQueue:      mlq.New[*serverStreamTXPacket](32),
+		TXQueue:      mlq.New[*serverStreamTXPacket](queueInitialCapacity),
 		Status:       "CONNECTED",
 		CreatedAt:    time.Now(),
 		LastActivity: time.Now(),

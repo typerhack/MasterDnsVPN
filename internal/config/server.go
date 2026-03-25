@@ -30,6 +30,11 @@ type ServerConfig struct {
 	DNSRequestWorkers                 int      `toml:"DNS_REQUEST_WORKERS"`
 	DeferredSessionWorkers            int      `toml:"DEFERRED_SESSION_WORKERS"`
 	DeferredSessionQueueLimit         int      `toml:"DEFERRED_SESSION_QUEUE_LIMIT"`
+	SessionOrphanQueueInitialCap      int      `toml:"SESSION_ORPHAN_QUEUE_INITIAL_CAPACITY"`
+	StreamQueueInitialCapacity        int      `toml:"STREAM_QUEUE_INITIAL_CAPACITY"`
+	DNSFragmentStoreCapacity          int      `toml:"DNS_FRAGMENT_STORE_CAPACITY"`
+	SOCKS5FragmentStoreCapacity       int      `toml:"SOCKS5_FRAGMENT_STORE_CAPACITY"`
+	StreamDataFragmentStoreCapacity   int      `toml:"STREAM_DATA_FRAGMENT_STORE_CAPACITY"`
 	MaxPacketSize                     int      `toml:"MAX_PACKET_SIZE"`
 	DropLogIntervalSecs               float64  `toml:"DROP_LOG_INTERVAL_SECONDS"`
 	InvalidCookieWindowSecs           float64  `toml:"INVALID_COOKIE_WINDOW_SECONDS"`
@@ -81,10 +86,15 @@ func defaultServerConfig() ServerConfig {
 		UDPPort:                           53,
 		UDPReaders:                        readers,
 		SocketBufferSize:                  8 * 1024 * 1024,
-		MaxConcurrentRequests:             4096,
+		MaxConcurrentRequests:             16384,
 		DNSRequestWorkers:                 workers,
-		DeferredSessionWorkers:            2,
-		DeferredSessionQueueLimit:         1000,
+		DeferredSessionWorkers:            8,
+		DeferredSessionQueueLimit:         4096,
+		SessionOrphanQueueInitialCap:      64,
+		StreamQueueInitialCapacity:        128,
+		DNSFragmentStoreCapacity:          256,
+		SOCKS5FragmentStoreCapacity:       512,
+		StreamDataFragmentStoreCapacity:   128,
 		MaxPacketSize:                     65535,
 		DropLogIntervalSecs:               2.0,
 		InvalidCookieWindowSecs:           2.0,
@@ -92,13 +102,13 @@ func defaultServerConfig() ServerConfig {
 		SessionTimeoutSecs:                300.0,
 		SessionCleanupIntervalSecs:        30.0,
 		ClosedSessionRetentionSecs:        600.0,
-		MaxPacketsPerBatch:                20,
+		MaxPacketsPerBatch:                8,
 		DNSUpstreamServers:                []string{"1.1.1.1:53"},
 		DNSUpstreamTimeoutSecs:            4.0,
 		SOCKSConnectTimeoutSecs:           8.0,
 		DNSFragmentAssemblyTimeoutSecs:    300.0,
-		DNSCacheMaxRecords:                10,
-		DNSCacheTTLSeconds:                60.0,
+		DNSCacheMaxRecords:                20000,
+		DNSCacheTTLSeconds:                300.0,
 		UseExternalSOCKS5:                 false,
 		SOCKS5Auth:                        false,
 		SOCKS5User:                        "admin",
@@ -112,7 +122,7 @@ func defaultServerConfig() ServerConfig {
 		DataEncryptionMethod:              1,
 		EncryptionKeyFile:                 "encrypt_key.txt",
 		LogLevel:                          "INFO",
-		ARQWindowSize:                     600,
+		ARQWindowSize:                     2000,
 		ARQInitialRTOSeconds:              1.0,
 		ARQMaxRTOSeconds:                  8.0,
 		ARQControlInitialRTOSeconds:       1.0,
@@ -180,6 +190,11 @@ func LoadServerConfig(filename string) (ServerConfig, error) {
 	if cfg.DeferredSessionQueueLimit > 8192 {
 		cfg.DeferredSessionQueueLimit = 8192
 	}
+	cfg.SessionOrphanQueueInitialCap = clampInt(defaultIntBelow(cfg.SessionOrphanQueueInitialCap, 1, 64), 4, 4096)
+	cfg.StreamQueueInitialCapacity = clampInt(defaultIntBelow(cfg.StreamQueueInitialCapacity, 1, 128), 8, 65536)
+	cfg.DNSFragmentStoreCapacity = clampInt(defaultIntBelow(cfg.DNSFragmentStoreCapacity, 1, 256), 16, 16384)
+	cfg.SOCKS5FragmentStoreCapacity = clampInt(defaultIntBelow(cfg.SOCKS5FragmentStoreCapacity, 1, 512), 16, 16384)
+	cfg.StreamDataFragmentStoreCapacity = clampInt(defaultIntBelow(cfg.StreamDataFragmentStoreCapacity, 1, 128), 16, 16384)
 
 	if cfg.MaxPacketSize <= 0 {
 		cfg.MaxPacketSize = 65535
@@ -263,7 +278,7 @@ func LoadServerConfig(filename string) (ServerConfig, error) {
 		cfg.LogLevel = "INFO"
 	}
 
-	cfg.ARQWindowSize = clampInt(defaultIntBelow(cfg.ARQWindowSize, 1, 600), 1, 4096)
+	cfg.ARQWindowSize = clampInt(defaultIntBelow(cfg.ARQWindowSize, 1, 2000), 1, 4096)
 	cfg.ARQInitialRTOSeconds = clampFloat(defaultFloatAtMostZero(cfg.ARQInitialRTOSeconds, 1.0), 0.05, 60.0)
 	cfg.ARQMaxRTOSeconds = clampFloat(defaultFloatAtMostZero(cfg.ARQMaxRTOSeconds, 8.0), cfg.ARQInitialRTOSeconds, 120.0)
 	cfg.ARQControlInitialRTOSeconds = clampFloat(defaultFloatAtMostZero(cfg.ARQControlInitialRTOSeconds, 1.0), 0.05, 60.0)
