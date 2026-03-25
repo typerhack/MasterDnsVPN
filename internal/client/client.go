@@ -273,6 +273,8 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			c.notifySessionCloseBurst(time.Second)
+			c.StopAsyncRuntime()
 			return nil
 		default:
 			if !c.successMTUChecks {
@@ -280,9 +282,10 @@ func (c *Client) Run(ctx context.Context) error {
 					c.log.Errorf("<red>MTU tests failed: %v</red>", err)
 					c.successMTUChecks = false
 					// Wait a bit before retrying or exiting if critical
-					c.log.Warnf("<yellow>Session init retry backoff: %s</yellow>", sessionInitRetryDelay)
 					select {
 					case <-ctx.Done():
+						c.notifySessionCloseBurst(time.Second)
+						c.StopAsyncRuntime()
 						return nil
 					case <-time.After(5 * time.Second):
 					}
@@ -294,6 +297,8 @@ func (c *Client) Run(ctx context.Context) error {
 					c.log.Errorf("<red>❌ MTU tests failed: Upload MTU: %d, Download MTU: %d</red>", c.syncedUploadMTU, c.syncedDownloadMTU)
 					select {
 					case <-ctx.Done():
+						c.notifySessionCloseBurst(time.Second)
+						c.StopAsyncRuntime()
 						return nil
 					case <-time.After(5 * time.Second):
 					}
@@ -313,8 +318,11 @@ func (c *Client) Run(ctx context.Context) error {
 					sessionInitRetryFailures++
 					sessionInitRetryDelay = nextSessionInitRetryDelay(sessionInitRetryFailures)
 					c.log.Errorf("<red>❌ Session initialization failed: %v</red>", err)
+					c.log.Warnf("<yellow>Session init retry backoff: %s</yellow>", sessionInitRetryDelay)
 					select {
 					case <-ctx.Done():
+						c.notifySessionCloseBurst(time.Second)
+						c.StopAsyncRuntime()
 						return nil
 					case <-time.After(sessionInitRetryDelay):
 					}
@@ -347,9 +355,13 @@ func (c *Client) Run(ctx context.Context) error {
 				c.StopAsyncRuntime()
 				c.resetSessionState(true)
 				c.clearRuntimeResetRequest()
-				c.log.Errorf("<red>❌ Session reset requested, retrying in %s</red>", sessionInitRetryDelay)
+				sessionInitRetryFailures++
+				sessionInitRetryDelay = nextSessionInitRetryDelay(sessionInitRetryFailures)
+				c.log.Warnf("<yellow>Session reset requested, retrying in %s</yellow>", sessionInitRetryDelay)
 				select {
 				case <-ctx.Done():
+					c.notifySessionCloseBurst(time.Second)
+					c.StopAsyncRuntime()
 					return nil
 				case <-time.After(sessionInitRetryDelay):
 				}
