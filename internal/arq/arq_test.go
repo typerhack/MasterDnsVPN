@@ -2,6 +2,8 @@ package arq
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -62,6 +64,59 @@ type testLogger struct {
 func (l *testLogger) Debugf(format string, args ...any) { l.t.Logf("[DEBUG] "+format, args...) }
 func (l *testLogger) Infof(format string, args ...any)  { l.t.Logf("[INFO] "+format, args...) }
 func (l *testLogger) Errorf(format string, args ...any) { l.t.Logf("[ERROR] "+format, args...) }
+
+type eofAfterDataConn struct {
+	mu     sync.Mutex
+	data   []byte
+	read   bool
+	closed bool
+}
+
+func (c *eofAfterDataConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.read {
+		return 0, io.EOF
+	}
+	c.read = true
+	n := copy(p, c.data)
+	return n, io.EOF
+}
+
+func (c *eofAfterDataConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *eofAfterDataConn) Close() error {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	return nil
+}
+
+type errAfterDataConn struct {
+	mu     sync.Mutex
+	data   []byte
+	err    error
+	read   bool
+	closed bool
+}
+
+func (c *errAfterDataConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.read {
+		return 0, c.err
+	}
+	c.read = true
+	n := copy(p, c.data)
+	return n, c.err
+}
+
+func (c *errAfterDataConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *errAfterDataConn) Close() error {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	return nil
+}
 
 func TestARQ_New(t *testing.T) {
 	enqueuer := NewMockPacketEnqueuer()
@@ -467,6 +522,96 @@ func TestARQ_GracefulClose(t *testing.T) {
 		// Success
 	case <-time.After(1 * time.Second):
 		t.Error("ARQ should be closed after FIN handshake")
+	}
+}
+
+func TestARQ_IOReadDataWithEOFStillQueuesFinalChunk(t *testing.T) {
+	enqueuer := NewMockPacketEnqueuer()
+	cfg := Config{
+		WindowSize:               100,
+		RTO:                      0.1,
+		MaxRTO:                   0.5,
+		EnableControlReliability: true,
+	}
+
+	conn := &eofAfterDataConn{data: []byte("final chunk")}
+	a := NewARQ(1, 1, enqueuer, conn, 1000, &testLogger{t}, cfg)
+	a.Start()
+	defer a.Close("test end", CloseOptions{Force: true})
+
+	var gotData bool
+	timeout := time.After(1 * time.Second)
+	for !gotData {
+		select {
+		case p := <-enqueuer.Packets:
+			switch p.packetType {
+			case Enums.PACKET_STREAM_DATA:
+				gotData = true
+				if !bytes.Equal(p.payload, []byte("final chunk")) {
+					t.Fatalf("expected final payload %q, got %q", []byte("final chunk"), p.payload)
+				}
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for final data, gotData=%t", gotData)
+		}
+	}
+
+	if !a.HasPendingSequence(0) {
+		t.Fatal("expected final chunk to remain tracked in sndBuf until acknowledged")
+	}
+	if a.IsReset() {
+		t.Fatal("expected EOF after data to stay on graceful close path, not reset path")
+	}
+}
+
+func TestARQ_IOReadDataWithErrorDefersRSTUntilDrain(t *testing.T) {
+	enqueuer := NewMockPacketEnqueuer()
+	cfg := Config{
+		WindowSize:               100,
+		RTO:                      0.1,
+		MaxRTO:                   0.5,
+		EnableControlReliability: true,
+	}
+
+	conn := &errAfterDataConn{data: []byte("chunk before read error"), err: errors.New("boom")}
+	a := NewARQ(1, 1, enqueuer, conn, 1000, &testLogger{t}, cfg)
+	a.Start()
+	defer a.Close("test end", CloseOptions{Force: true})
+
+	timeout := time.After(1 * time.Second)
+	gotData := false
+	for !gotData {
+		select {
+		case p := <-enqueuer.Packets:
+			if p.packetType == Enums.PACKET_STREAM_DATA {
+				gotData = true
+				if !bytes.Equal(p.payload, []byte("chunk before read error")) {
+					t.Fatalf("expected queued payload %q, got %q", []byte("chunk before read error"), p.payload)
+				}
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for final data chunk")
+		}
+	}
+
+	if !a.HasPendingSequence(0) {
+		t.Fatal("expected final chunk to remain pending for drain")
+	}
+
+	select {
+	case p := <-enqueuer.Packets:
+		if p.packetType == Enums.PACKET_STREAM_RST {
+			t.Fatal("expected read error after data not to emit RST immediately before drain")
+		}
+	default:
+	}
+
+	a.mu.Lock()
+	deferred := a.deferredClose
+	deferredPacket := a.deferredPacket
+	a.mu.Unlock()
+	if !deferred || deferredPacket != Enums.PACKET_STREAM_RST {
+		t.Fatal("expected read error after data to arm deferred RST drain path")
 	}
 }
 

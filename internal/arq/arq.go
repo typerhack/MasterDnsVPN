@@ -581,6 +581,7 @@ func (a *ARQ) ioLoop() {
 	defer a.wg.Done()
 
 	resetRequired := false
+	resetAfterDrain := false
 	gracefulEOF := false
 	alreadyHandled := false
 	var errorReason string
@@ -620,6 +621,36 @@ func (a *ARQ) ioLoop() {
 		}
 
 		n, err := a.localConn.Read(buf)
+		if n > 0 {
+			raw := append([]byte(nil), buf[:n]...)
+
+			a.mu.Lock()
+			a.lastActivity = time.Now()
+			sn := a.sndNxt
+			a.sndNxt++
+
+			a.sndBuf[sn] = &arqDataItem{
+				Data:            raw,
+				CreatedAt:       time.Now(),
+				LastSentAt:      time.Now(),
+				Retries:         0,
+				CurrentRTO:      a.rto,
+				CompressionType: a.compressionType,
+				TTL:             0,
+			}
+
+			if len(a.sndBuf) >= a.limit {
+				a.clearWindowNotFull()
+			}
+			a.mu.Unlock()
+
+			a.enqueuer.PushTXPacket(
+				Enums.DefaultPacketPriority(Enums.PACKET_STREAM_DATA),
+				Enums.PACKET_STREAM_DATA,
+				sn, 0, 0, a.compressionType, 0, raw,
+			)
+		}
+
 		if err != nil {
 			if ne, ok := err.(interface{ Timeout() bool }); ok && ne.Timeout() {
 				continue
@@ -631,6 +662,7 @@ func (a *ARQ) ioLoop() {
 			} else {
 				errorReason = "Read Error: " + err.Error()
 				resetRequired = true
+				resetAfterDrain = n > 0
 			}
 			break
 		}
@@ -638,34 +670,6 @@ func (a *ARQ) ioLoop() {
 		if n <= 0 {
 			continue
 		}
-
-		raw := append([]byte(nil), buf[:n]...)
-
-		a.mu.Lock()
-		a.lastActivity = time.Now()
-		sn := a.sndNxt
-		a.sndNxt++
-
-		a.sndBuf[sn] = &arqDataItem{
-			Data:            raw,
-			CreatedAt:       time.Now(),
-			LastSentAt:      time.Now(),
-			Retries:         0,
-			CurrentRTO:      a.rto,
-			CompressionType: a.compressionType,
-			TTL:             0,
-		}
-
-		if len(a.sndBuf) >= a.limit {
-			a.clearWindowNotFull()
-		}
-		a.mu.Unlock()
-
-		a.enqueuer.PushTXPacket(
-			Enums.DefaultPacketPriority(Enums.PACKET_STREAM_DATA),
-			Enums.PACKET_STREAM_DATA,
-			sn, 0, 0, a.compressionType, 0, raw,
-		)
 	}
 
 	if a.isClosed() || alreadyHandled {
@@ -673,7 +677,7 @@ func (a *ARQ) ioLoop() {
 	}
 
 	if resetRequired {
-		a.Close(errorReason, CloseOptions{SendRST: true})
+		a.Close(errorReason, CloseOptions{SendRST: true, AfterDrain: resetAfterDrain})
 		return
 	}
 
