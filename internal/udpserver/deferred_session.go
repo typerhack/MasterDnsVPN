@@ -307,7 +307,6 @@ func (p *deferredSessionProcessor) compactWorkerLocked(workerIdx int, drop func(
 			if p.shouldDropTaskLocked(task.lane, drop) {
 				worker.pending.Add(-1)
 				delete(p.laneWorker, task.lane)
-				delete(p.cancelled, task.lane)
 				p.decrementSessionPendingLocked(task.lane.sessionID)
 				dropped++
 				continue

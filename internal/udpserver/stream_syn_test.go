@@ -494,6 +494,43 @@ func TestDeferredSessionProcessorFastFailsWhenWorkerQueueIsFull(t *testing.T) {
 	}
 }
 
+func TestDeferredSessionProcessorCompactKeepsCancelledMarkerForInFlightTask(t *testing.T) {
+	processor := newDeferredSessionProcessor(1, 4, nil)
+	if processor == nil {
+		t.Fatal("expected deferred processor")
+	}
+
+	lane := deferredSessionLane{sessionID: 14, streamID: 3}
+	duplicate := deferredSessionTask{lane: lane, run: func(context.Context) {}}
+
+	processor.mu.Lock()
+	processor.cancelled[lane] = struct{}{}
+	processor.laneWorker[lane] = 0
+	processor.sessionPending[lane.sessionID] = 1
+	processor.workers[0].pending.Store(1)
+	processor.workers[0].jobs <- duplicate
+	dropped := processor.compactWorkerLocked(0, func(candidate deferredSessionLane) bool {
+		return candidate == lane
+	})
+	_, stillCancelled := processor.cancelled[lane]
+	processor.mu.Unlock()
+
+	if dropped != 1 {
+		t.Fatalf("expected one duplicate task to be compacted, got %d", dropped)
+	}
+	if !stillCancelled {
+		t.Fatal("expected cancelled marker to survive queue compaction for in-flight task safety")
+	}
+
+	taskCtx, cancel := processor.beginTaskContext(context.Background(), lane)
+	defer cancel()
+	select {
+	case <-taskCtx.Done():
+	default:
+		t.Fatal("expected beginTaskContext to see preserved cancelled marker")
+	}
+}
+
 func TestInvalidSessionDropLogConfigRecentlyClosedIgnoresReceivedCookie(t *testing.T) {
 	key1, interval1 := invalidSessionDropLogConfig("recently closed session", 3, 10, 241, 0)
 	key2, interval2 := invalidSessionDropLogConfig("recently closed session", 3, 99, 241, 0)
